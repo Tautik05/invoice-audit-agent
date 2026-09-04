@@ -10,9 +10,17 @@ sys.path.insert(
     )
 )
 
+from app.evaluation.benchmark_metrics import (
+    calculate_category_accuracy,
+    calculate_field_accuracy,
+    calculate_overall_accuracy,
+)
 from app.evaluation.benchmark_results import BenchmarkResults
 from app.evaluation.benchmark_state import BenchmarkState
-from app.evaluation.invoice_metrics import evaluate_invoice
+from app.evaluation.invoice_metrics import (
+    InvoiceEvaluation,
+    evaluate_invoice,
+)
 from app.extraction.document import PDFTextExtractor
 from app.extraction.extractor import InvoiceExtractor
 from app.extraction.pipeline import InvoiceExtractionPipeline
@@ -21,11 +29,7 @@ from app.llm.router import LLMRouter
 from app.llm.router_config import create_llm_router
 from app.schemas.benchmark import BenchmarkEvaluationSet
 from app.schemas.synthetic import SyntheticInvoiceRecord
-from app.evaluation.benchmark_metrics import (
-    calculate_category_accuracy,
-    calculate_field_accuracy,
-    calculate_overall_accuracy,
-)
+
 
 BENCHMARK_GROUND_TRUTH_PATH = Path(
     "data/benchmark/ground_truth.jsonl"
@@ -156,15 +160,14 @@ def create_benchmark_router(
 def evaluation_to_result(
     invoice_number: str,
     category: str,
-    evaluation,
-    *,
-    provider: str,
-    model: str,
+    evaluation: InvoiceEvaluation,
+    provider: str | None,
+    model: str | None,
     latency_seconds: float,
 ) -> dict:
     """
-    Convert InvoiceEvaluation into a JSON-serializable
-    benchmark result.
+    Convert an invoice evaluation into a
+    persistable benchmark result.
     """
 
     return {
@@ -172,7 +175,10 @@ def evaluation_to_result(
         "category": category,
         "provider": provider,
         "model": model,
-        "latency_seconds": latency_seconds,
+        "latency_seconds": round(
+            latency_seconds,
+            3,
+        ),
         "invoice_number_correct": (
             evaluation.invoice_number_correct
         ),
@@ -212,15 +218,11 @@ def evaluation_to_result(
 
 def result_to_evaluation(
     result: dict,
-):
+) -> InvoiceEvaluation:
     """
     Reconstruct InvoiceEvaluation from a persisted
     benchmark result.
     """
-
-    from app.evaluation.invoice_metrics import (
-        InvoiceEvaluation,
-    )
 
     return InvoiceEvaluation(
         invoice_number_correct=result[
@@ -324,6 +326,36 @@ def calculate_results(
         calculate_category_accuracy(results)
     )
 
+    valid_latencies = [
+        result["latency_seconds"]
+        for result in results
+        if result.get("latency_seconds")
+        is not None
+    ]
+
+    average_latency = (
+        sum(valid_latencies)
+        / len(valid_latencies)
+        if valid_latencies
+        else None
+    )
+
+    model_usage: dict[str, int] = {}
+
+    for result in results:
+        provider = result.get("provider")
+        model = result.get("model")
+
+        if provider and model:
+            model_key = (
+                f"{provider}/{model}"
+            )
+
+            model_usage[model_key] = (
+                model_usage.get(model_key, 0)
+                + 1
+            )
+
     print("\n")
     print("=" * 80)
     print("BENCHMARK RESULTS")
@@ -333,6 +365,12 @@ def calculate_results(
         f"Documents evaluated: "
         f"{len(results)}"
     )
+
+    if average_latency is not None:
+        print(
+            f"Average extraction latency: "
+            f"{average_latency:.2f}s"
+        )
 
     print("\nField accuracy:")
 
@@ -362,6 +400,19 @@ def calculate_results(
             f"{accuracy:.1%} "
             f"({category_count} docs)"
         )
+
+    print("\nModel usage:")
+
+    if model_usage:
+        for model, count in sorted(
+            model_usage.items()
+        ):
+            print(
+                f"  {model:<40} "
+                f"{count} docs"
+            )
+    else:
+        print("  No model metadata available.")
 
 
 def main() -> None:
@@ -466,8 +517,9 @@ def main() -> None:
                 or router.last_used_model is None
             ):
                 raise RuntimeError(
-                    "LLM router returned a response without "
-                    "recording the provider/model used."
+                    "LLM router returned a response "
+                    "without recording the "
+                    "provider/model used."
                 )
 
             result = evaluation_to_result(
@@ -478,10 +530,12 @@ def main() -> None:
                 model=router.last_used_model,
                 latency_seconds=elapsed,
             )
+
             # Persist the evaluation immediately so
             # progress survives interruption.
             results_manager.append(result)
             existing_results.append(result)
+
             existing_result_ids.add(
                 invoice_number
             )
@@ -502,6 +556,12 @@ def main() -> None:
 
             print(
                 f"  Time: {elapsed:.2f}s"
+            )
+
+            print(
+                f"  Model: "
+                f"{router.last_used_provider}/"
+                f"{router.last_used_model}"
             )
 
             print(
@@ -600,6 +660,7 @@ def main() -> None:
     )
 
     print()
+
     print(
         f"Completed documents: "
         f"{len(state['completed'])}"
