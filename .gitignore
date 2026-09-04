@@ -63,6 +63,8 @@ logs/
 data/raw/*
 data/synthetic/*
 
+data/benchmark/benchmark_state.json
+data/benchmark/benchmark_results.jsonl
 # Keep directory structure
 !data/raw/.gitkeep
 !data/synthetic/.gitkeep

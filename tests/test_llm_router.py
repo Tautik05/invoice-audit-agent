@@ -482,3 +482,108 @@ def test_router_skips_model_with_open_circuit():
     assert first_provider.calls == 0
     assert fallback_provider.calls == 1
 
+def test_router_records_successful_model():
+    provider = FakeProvider(
+        responses=[
+            '{"invoice_number": "INV-001"}'
+        ]
+    )
+
+    router = LLMRouter(
+        models=[
+            ModelConfig(
+                provider="gemini",
+                model="gemini-3.6-flash",
+            )
+        ],
+        retry_policy=RetryPolicy(
+            max_attempts=1,
+            initial_delay=0,
+        ),
+    )
+
+    router._create_provider = (
+        lambda config: provider
+    )
+
+    result = router.generate_structured(
+        prompt="test",
+        response_schema=dict,
+    )
+
+    assert result == (
+        '{"invoice_number": "INV-001"}'
+    )
+
+    assert (
+        router.last_used_provider
+        == "gemini"
+    )
+
+    assert (
+        router.last_used_model
+        == "gemini-3.6-flash"
+    )
+
+def test_router_records_fallback_model():
+    gemini_provider = FakeProvider(
+        responses=[
+            make_error(
+                LLMErrorType.TRANSIENT,
+                retryable=False,
+                provider="gemini",
+                model="gemini-3.6-flash",
+            )
+        ]
+    )
+
+    groq_provider = FakeProvider(
+        responses=[
+            '{"invoice_number": "INV-001"}'
+        ]
+    )
+
+    providers = {
+        "gemini-3.6-flash": gemini_provider,
+        "qwen/qwen3.6-27b": groq_provider,
+    }
+
+    router = LLMRouter(
+        models=[
+            ModelConfig(
+                provider="gemini",
+                model="gemini-3.6-flash",
+            ),
+            ModelConfig(
+                provider="groq",
+                model="qwen/qwen3.6-27b",
+            ),
+        ],
+        retry_policy=RetryPolicy(
+            max_attempts=1,
+            initial_delay=0,
+        ),
+    )
+
+    router._create_provider = (
+        lambda config: providers[config.model]
+    )
+
+    result = router.generate_structured(
+        prompt="test",
+        response_schema=dict,
+    )
+
+    assert result == (
+        '{"invoice_number": "INV-001"}'
+    )
+
+    assert (
+        router.last_used_provider
+        == "groq"
+    )
+
+    assert (
+        router.last_used_model
+        == "qwen/qwen3.6-27b"
+    )

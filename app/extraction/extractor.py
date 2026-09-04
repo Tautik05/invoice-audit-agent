@@ -2,6 +2,9 @@ from app.llm.router import LLMRouter
 from app.llm.router_config import create_llm_router
 from app.schemas.extraction import ExtractedInvoice
 
+from app.extraction.response_normalizer import (
+    normalize_extraction_response,
+)
 
 class InvoiceExtractor:
     """Extract structured invoice data using an LLM router."""
@@ -22,17 +25,16 @@ class InvoiceExtractor:
         prompt = f"""
 Extract the invoice information from the document below.
 
+Return the result as valid JSON matching the requested schema.
+
 Rules:
 - Extract only information explicitly present in the document.
-- Do not invent missing values.
-- Preserve the invoice's monetary values.
-- Extract every invoice line item.
-- Return the tax rate as a decimal fraction.
-  For example, 18% should become 0.18.
-- Currency must be a three-letter ISO currency code.
+- Do not correct mathematical errors in the invoice.
+- Preserve the values exactly as printed.
+- Do not infer missing information.
+- If a field is not present, return null where permitted.
 
-Invoice document:
-
+Document:
 {document_text}
 """
 
@@ -43,7 +45,7 @@ Invoice document:
             )
         )
 
-        return ExtractedInvoice.model_validate_json(
+        return normalize_extraction_response(
             response_text
         )
 

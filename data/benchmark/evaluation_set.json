@@ -1,0 +1,116 @@
+{
+  "version": 1,
+  "description": "Curated evaluation set for invoice extraction robustness.",
+  "documents": [
+    {
+      "invoice_number": "INV-00001",
+      "category": "clean",
+      "template": 1
+    },
+    {
+      "invoice_number": "INV-00002",
+      "category": "clean",
+      "template": 2
+    },
+    {
+      "invoice_number": "INV-00003",
+      "category": "clean",
+      "template": 3
+    },
+    {
+      "invoice_number": "INV-00004",
+      "category": "clean",
+      "template": 4
+    },
+    {
+      "invoice_number": "INV-00005",
+      "category": "clean",
+      "template": 5
+    },
+    {
+      "invoice_number": "INV-00006",
+      "category": "clean",
+      "template": 6
+    },
+    {
+      "invoice_number": "INV-00007",
+      "category": "clean",
+      "template": 7
+    },
+    {
+      "invoice_number": "INV-00021",
+      "category": "tax_mismatch",
+      "template": 7
+    },
+    {
+      "invoice_number": "INV-00022",
+      "category": "tax_mismatch",
+      "template": 1
+    },
+    {
+      "invoice_number": "INV-00023",
+      "category": "tax_mismatch",
+      "template": 2
+    },
+    {
+      "invoice_number": "INV-00024",
+      "category": "subtotal_mismatch",
+      "template": 3
+    },
+    {
+      "invoice_number": "INV-00025",
+      "category": "subtotal_mismatch",
+      "template": 4
+    },
+    {
+      "invoice_number": "INV-00026",
+      "category": "subtotal_mismatch",
+      "template": 5
+    },
+    {
+      "invoice_number": "INV-00027",
+      "category": "total_mismatch",
+      "template": 6
+    },
+    {
+      "invoice_number": "INV-00028",
+      "category": "total_mismatch",
+      "template": 7
+    },
+    {
+      "invoice_number": "INV-00029",
+      "category": "total_mismatch",
+      "template": 1
+    },
+    {
+      "invoice_number": "INV-00030",
+      "category": "missing_po",
+      "template": 2
+    },
+    {
+      "invoice_number": "INV-00031",
+      "category": "missing_po",
+      "template": 3
+    },
+    {
+      "invoice_number": "INV-00032",
+      "category": "missing_po",
+      "template": 4
+    },
+    {
+      "invoice_number": "INV-00033",
+      "category": "currency_mismatch",
+      "template": 5
+    },
+    {
+      "invoice_number": "INV-00034",
+      "category": "currency_mismatch",
+      "template": 6
+    },
+    {
+      "invoice_number": "INV-00035",
+      "category": "currency_mismatch",
+      "template": 7
+    }
+  ]
+}

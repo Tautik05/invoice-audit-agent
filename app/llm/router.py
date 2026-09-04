@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from logging import config
 from typing import Any
 
 from app.llm.circuit_breaker import CircuitBreaker
@@ -36,6 +37,9 @@ class LLMRouter:
             or CircuitBreaker()
         )
 
+        self.last_used_provider: str | None = None
+        self.last_used_model: str | None = None
+
     def _create_provider(
         self,
         config: ModelConfig,
@@ -62,6 +66,9 @@ class LLMRouter:
     ) -> str:
         errors: list[str] = []
 
+        self.last_used_provider = None
+        self.last_used_model = None
+        
         for config in self.models:
             model_key = (
                 f"{config.provider}/"
@@ -100,6 +107,9 @@ class LLMRouter:
                 self.circuit_breaker.reset(
                     model_key
                 )
+
+                self.last_used_provider = config.provider
+                self.last_used_model = config.model
 
                 return result
 

@@ -10,35 +10,63 @@ sys.path.insert(
     )
 )
 
+from app.evaluation.benchmark_results import BenchmarkResults
 from app.evaluation.benchmark_state import BenchmarkState
 from app.evaluation.invoice_metrics import evaluate_invoice
+from app.extraction.document import PDFTextExtractor
+from app.extraction.extractor import InvoiceExtractor
 from app.extraction.pipeline import InvoiceExtractionPipeline
 from app.llm.errors import LLMError, LLMErrorType
-from app.llm.router import LLMRouter, ModelConfig
+from app.llm.router import LLMRouter
 from app.llm.router_config import create_llm_router
+from app.schemas.benchmark import BenchmarkEvaluationSet
 from app.schemas.synthetic import SyntheticInvoiceRecord
+from app.evaluation.benchmark_metrics import (
+    calculate_category_accuracy,
+    calculate_field_accuracy,
+    calculate_overall_accuracy,
+)
 
-
-GROUND_TRUTH_PATH = Path(
-    "data/synthetic/ground_truth.jsonl"
+BENCHMARK_GROUND_TRUTH_PATH = Path(
+    "data/benchmark/ground_truth.jsonl"
 )
 
 PDF_DIRECTORY = Path(
-    "data/synthetic/documents"
+    "data/benchmark/documents"
+)
+
+MANIFEST_PATH = Path(
+    "data/benchmark/evaluation_set.json"
 )
 
 STATE_PATH = Path(
     "data/benchmark/benchmark_state.json"
 )
 
-NUMBER_OF_DOCUMENTS = 10
+RESULTS_PATH = Path(
+    "data/benchmark/benchmark_results.jsonl"
+)
 
 
-def load_ground_truth(
-) -> dict[str, SyntheticInvoiceRecord]:
+def load_evaluation_set() -> BenchmarkEvaluationSet:
+    data = json.loads(
+        MANIFEST_PATH.read_text(
+            encoding="utf-8"
+        )
+    )
+
+    return BenchmarkEvaluationSet.model_validate(
+        data
+    )
+
+
+def load_ground_truth() -> dict[
+    str,
+    SyntheticInvoiceRecord,
+]:
     records = {}
 
-    with GROUND_TRUTH_PATH.open(
+    with BENCHMARK_GROUND_TRUTH_PATH.open(
         "r",
         encoding="utf-8",
     ) as file:
@@ -54,6 +82,39 @@ def load_ground_truth(
     return records
 
 
+def validate_benchmark_inputs(
+    evaluation_set: BenchmarkEvaluationSet,
+    ground_truth: dict[
+        str,
+        SyntheticInvoiceRecord,
+    ],
+) -> None:
+    """
+    Validate every benchmark input before making
+    any LLM API calls.
+    """
+
+    for document in evaluation_set.documents:
+        invoice_number = document.invoice_number
+
+        pdf_path = (
+            PDF_DIRECTORY
+            / f"{invoice_number}.pdf"
+        )
+
+        if not pdf_path.exists():
+            raise FileNotFoundError(
+                f"Benchmark PDF not found: "
+                f"{pdf_path}"
+            )
+
+        if invoice_number not in ground_truth:
+            raise ValueError(
+                "Missing ground truth for "
+                f"{invoice_number}."
+            )
+
+
 def create_benchmark_router(
     state: dict,
 ) -> LLMRouter:
@@ -65,7 +126,7 @@ def create_benchmark_router(
     unavailable_models = set(
         state.get(
             "unavailable_models",
-            []
+            [],
         )
     )
 
@@ -77,9 +138,13 @@ def create_benchmark_router(
     available_models = [
         model
         for model in base_router.models
-        if model.model
-        not in unavailable_models
+        if model.model not in unavailable_models
     ]
+
+    if not available_models:
+        raise RuntimeError(
+            "No benchmark LLM models are available."
+        )
 
     return LLMRouter(
         models=available_models,
@@ -88,36 +153,119 @@ def create_benchmark_router(
     )
 
 
-def main() -> None:
-    ground_truth = load_ground_truth()
+def evaluation_to_result(
+    invoice_number: str,
+    category: str,
+    evaluation,
+    *,
+    provider: str,
+    model: str,
+    latency_seconds: float,
+) -> dict:
+    """
+    Convert InvoiceEvaluation into a JSON-serializable
+    benchmark result.
+    """
 
-    state_manager = BenchmarkState(
-        STATE_PATH
+    return {
+        "invoice_number": invoice_number,
+        "category": category,
+        "provider": provider,
+        "model": model,
+        "latency_seconds": latency_seconds,
+        "invoice_number_correct": (
+            evaluation.invoice_number_correct
+        ),
+        "vendor_correct": (
+            evaluation.vendor_correct
+        ),
+        "po_number_correct": (
+            evaluation.po_number_correct
+        ),
+        "currency_correct": (
+            evaluation.currency_correct
+        ),
+        "line_items_correct": (
+            evaluation.line_items_correct
+        ),
+        "subtotal_correct": (
+            evaluation.subtotal_correct
+        ),
+        "tax_rate_correct": (
+            evaluation.tax_rate_correct
+        ),
+        "tax_correct": (
+            evaluation.tax_correct
+        ),
+        "total_correct": (
+            evaluation.total_correct
+        ),
+        "correct_fields": (
+            evaluation.correct_fields
+        ),
+        "total_fields": (
+            evaluation.total_fields
+        ),
+        "accuracy": evaluation.accuracy,
+    }
+
+
+def result_to_evaluation(
+    result: dict,
+):
+    """
+    Reconstruct InvoiceEvaluation from a persisted
+    benchmark result.
+    """
+
+    from app.evaluation.invoice_metrics import (
+        InvoiceEvaluation,
     )
 
-    state = state_manager.load()
-
-    router = create_benchmark_router(
-        state
+    return InvoiceEvaluation(
+        invoice_number_correct=result[
+            "invoice_number_correct"
+        ],
+        vendor_correct=result[
+            "vendor_correct"
+        ],
+        po_number_correct=result[
+            "po_number_correct"
+        ],
+        currency_correct=result[
+            "currency_correct"
+        ],
+        line_items_correct=result[
+            "line_items_correct"
+        ],
+        subtotal_correct=result[
+            "subtotal_correct"
+        ],
+        tax_rate_correct=result[
+            "tax_rate_correct"
+        ],
+        tax_correct=result[
+            "tax_correct"
+        ],
+        total_correct=result[
+            "total_correct"
+        ],
     )
 
-    pipeline = InvoiceExtractionPipeline(
-        invoice_extractor=None
-    )
 
-    # Replace the pipeline's extractor router
-    # with the benchmark-aware router.
-    pipeline.invoice_extractor.llm_router = router
-
-    evaluations = []
-
+def print_benchmark_configuration(
+    evaluation_set: BenchmarkEvaluationSet,
+    router: LLMRouter,
+    state: dict,
+    existing_results: list[dict],
+) -> None:
     print("=" * 80)
     print("INVOICE EXTRACTION BASELINE")
     print("=" * 80)
 
     print(
         f"Documents configured: "
-        f"{NUMBER_OF_DOCUMENTS}"
+        f"{len(evaluation_set.documents)}"
     )
 
     print(
@@ -125,11 +273,14 @@ def main() -> None:
         f"{len(state['completed'])}"
     )
 
-    unavailable_models = set(
-        state.get(
-            "unavailable_models",
-            []
-        )
+    print(
+        f"Persisted evaluation results: "
+        f"{len(existing_results)}"
+    )
+
+    unavailable_models = state.get(
+        "unavailable_models",
+        [],
     )
 
     if unavailable_models:
@@ -142,11 +293,6 @@ def main() -> None:
         ):
             print(f"  - {model}")
 
-    print(
-        f"Starting from invoice: "
-        f"INV-{state['next_index']:05d}"
-    )
-
     print("\nActive benchmark models:")
 
     for model in router.models:
@@ -155,15 +301,131 @@ def main() -> None:
             f"{model.model}"
         )
 
-    for index in range(
-        state["next_index"],
-        NUMBER_OF_DOCUMENTS + 1,
-    ):
-        invoice_number = (
-            f"INV-{index:05d}"
+
+def calculate_results(
+    results: list[dict],
+) -> None:
+    if not results:
+        print(
+            "\nNo successful benchmark "
+            "results available."
+        )
+        return
+
+    field_accuracy = calculate_field_accuracy(
+        results
+    )
+
+    overall_accuracy = (
+        calculate_overall_accuracy(results)
+    )
+
+    category_accuracy = (
+        calculate_category_accuracy(results)
+    )
+
+    print("\n")
+    print("=" * 80)
+    print("BENCHMARK RESULTS")
+    print("=" * 80)
+
+    print(
+        f"Documents evaluated: "
+        f"{len(results)}"
+    )
+
+    print("\nField accuracy:")
+
+    for field, accuracy in field_accuracy.items():
+        print(
+            f"  {field:<20} "
+            f"{accuracy:.1%}"
         )
 
-        if invoice_number in state["completed"]:
+    print(
+        f"\nOverall field accuracy: "
+        f"{overall_accuracy:.1%}"
+    )
+
+    print("\nCategory accuracy:")
+
+    for category, accuracy in (
+        category_accuracy.items()
+    ):
+        category_count = sum(
+            result["category"] == category
+            for result in results
+        )
+
+        print(
+            f"  {category:<20} "
+            f"{accuracy:.1%} "
+            f"({category_count} docs)"
+        )
+
+
+def main() -> None:
+    evaluation_set = (
+        load_evaluation_set()
+    )
+
+    ground_truth = load_ground_truth()
+
+    # Validate the complete benchmark before
+    # constructing or calling any LLM provider.
+    validate_benchmark_inputs(
+        evaluation_set,
+        ground_truth,
+    )
+
+    state_manager = BenchmarkState(
+        STATE_PATH
+    )
+
+    state = state_manager.load()
+
+    results_manager = BenchmarkResults(
+        RESULTS_PATH
+    )
+
+    existing_results = (
+        results_manager.load()
+    )
+
+    existing_result_ids = {
+        result["invoice_number"]
+        for result in existing_results
+    }
+
+    router = create_benchmark_router(
+        state
+    )
+
+    invoice_extractor = InvoiceExtractor(
+        llm_router=router
+    )
+
+    pipeline = InvoiceExtractionPipeline(
+        document_extractor=PDFTextExtractor(),
+        invoice_extractor=invoice_extractor,
+    )
+
+    print_benchmark_configuration(
+        evaluation_set,
+        router,
+        state,
+        existing_results,
+    )
+
+    for document in evaluation_set.documents:
+        invoice_number = (
+            document.invoice_number
+        )
+
+        if (
+            invoice_number in state["completed"]
+            or invoice_number in existing_result_ids
+        ):
             print(
                 f"\nSkipping {invoice_number}: "
                 "already completed."
@@ -176,7 +438,8 @@ def main() -> None:
         )
 
         print(
-            f"\nProcessing {invoice_number}..."
+            f"\nProcessing {invoice_number} "
+            f"[{document.category}]..."
         )
 
         start_time = time.perf_counter()
@@ -192,21 +455,43 @@ def main() -> None:
             )
 
             evaluation = evaluate_invoice(
-                ground_truth[invoice_number],
+                ground_truth[
+                    invoice_number
+                ],
                 prediction,
             )
 
-            evaluations.append(
-                evaluation
-            )
+            if (
+                router.last_used_provider is None
+                or router.last_used_model is None
+            ):
+                raise RuntimeError(
+                    "LLM router returned a response without "
+                    "recording the provider/model used."
+                )
 
-            state["completed"].append(
+            result = evaluation_to_result(
+                invoice_number=invoice_number,
+                category=document.category,
+                evaluation=evaluation,
+                provider=router.last_used_provider,
+                model=router.last_used_model,
+                latency_seconds=elapsed,
+            )
+            # Persist the evaluation immediately so
+            # progress survives interruption.
+            results_manager.append(result)
+            existing_results.append(result)
+            existing_result_ids.add(
                 invoice_number
             )
 
-            state["next_index"] = (
-                index + 1
-            )
+            if invoice_number not in state[
+                "completed"
+            ]:
+                state["completed"].append(
+                    invoice_number
+                )
 
             state_manager.save(state)
 
@@ -220,7 +505,7 @@ def main() -> None:
             )
 
             print(
-                "  Progress saved."
+                "  Result persisted."
             )
 
         except LLMError as exc:
@@ -241,14 +526,9 @@ def main() -> None:
                         "unavailable_models"
                     ].append(exc.model)
 
-                state["next_index"] = index
-
-                state_manager.save(
-                    state
-                )
+                state_manager.save(state)
 
                 print()
-
                 print(
                     f"Quota exhausted for "
                     f"{exc.provider}/"
@@ -260,8 +540,8 @@ def main() -> None:
                 )
 
                 print(
-                    "The model will be "
-                    "excluded on the next run."
+                    "The model will be excluded "
+                    "on the next run."
                 )
 
                 print(
@@ -285,13 +565,7 @@ def main() -> None:
                 }
             )
 
-            state["next_index"] = (
-                index + 1
-            )
-
-            state_manager.save(
-                state
-            )
+            state_manager.save(state)
 
         except Exception as exc:
             print(
@@ -313,115 +587,27 @@ def main() -> None:
                 }
             )
 
-            state["next_index"] = (
-                index + 1
-            )
+            state_manager.save(state)
 
-            state_manager.save(
-                state
-            )
-
-    if not evaluations:
-        print(
-            "\nNo new successful "
-            "evaluations in this run."
-        )
-
-        print(
-            f"Previously completed "
-            f"invoices: "
-            f"{len(state['completed'])}"
-        )
-
-        print(
-            f"Failed invoices recorded: "
-            f"{len(state['failed'])}"
-        )
-
-        return
-
-    field_accuracy = {
-        "invoice_number": sum(
-            e.invoice_number_correct
-            for e in evaluations
-        ),
-        "vendor": sum(
-            e.vendor_correct
-            for e in evaluations
-        ),
-        "po_number": sum(
-            e.po_number_correct
-            for e in evaluations
-        ),
-        "currency": sum(
-            e.currency_correct
-            for e in evaluations
-        ),
-        "line_items": sum(
-            e.line_items_correct
-            for e in evaluations
-        ),
-        "subtotal": sum(
-            e.subtotal_correct
-            for e in evaluations
-        ),
-        "tax_rate": sum(
-            e.tax_rate_correct
-            for e in evaluations
-        ),
-        "tax": sum(
-            e.tax_correct
-            for e in evaluations
-        ),
-        "total": sum(
-            e.total_correct
-            for e in evaluations
-        ),
-    }
-
-    print("\n")
-    print("=" * 80)
-    print("BASELINE RESULTS")
-    print("=" * 80)
-
-    print(
-        f"Documents evaluated this run: "
-        f"{len(evaluations)}"
+    # Always calculate from ALL persisted results,
+    # not only results generated during this run.
+    final_results = (
+        results_manager.load()
     )
 
+    calculate_results(
+        final_results
+    )
+
+    print()
     print(
-        f"Total completed documents: "
+        f"Completed documents: "
         f"{len(state['completed'])}"
     )
 
-    print("\nField accuracy:")
-
-    for field, correct in (
-        field_accuracy.items()
-    ):
-        accuracy = (
-            correct
-            / len(evaluations)
-        )
-
-        print(
-            f"  {field:<20} "
-            f"{accuracy:.1%}"
-        )
-
-    total_correct = sum(
-        evaluation.correct_fields
-        for evaluation in evaluations
-    )
-
-    total_fields = sum(
-        evaluation.total_fields
-        for evaluation in evaluations
-    )
-
     print(
-        f"\nOverall field accuracy: "
-        f"{total_correct / total_fields:.1%}"
+        f"Failed documents: "
+        f"{len(state['failed'])}"
     )
 
 
