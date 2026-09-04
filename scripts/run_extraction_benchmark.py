@@ -14,6 +14,8 @@ from app.evaluation.benchmark_state import BenchmarkState
 from app.evaluation.invoice_metrics import evaluate_invoice
 from app.extraction.pipeline import InvoiceExtractionPipeline
 from app.llm.errors import LLMError, LLMErrorType
+from app.llm.router import LLMRouter, ModelConfig
+from app.llm.router_config import create_llm_router
 from app.schemas.synthetic import SyntheticInvoiceRecord
 
 
@@ -32,7 +34,8 @@ STATE_PATH = Path(
 NUMBER_OF_DOCUMENTS = 10
 
 
-def load_ground_truth() -> dict[str, SyntheticInvoiceRecord]:
+def load_ground_truth(
+) -> dict[str, SyntheticInvoiceRecord]:
     records = {}
 
     with GROUND_TRUTH_PATH.open(
@@ -40,8 +43,10 @@ def load_ground_truth() -> dict[str, SyntheticInvoiceRecord]:
         encoding="utf-8",
     ) as file:
         for line in file:
-            invoice = SyntheticInvoiceRecord.model_validate(
-                json.loads(line)
+            invoice = (
+                SyntheticInvoiceRecord.model_validate(
+                    json.loads(line)
+                )
             )
 
             records[invoice.invoice_number] = invoice
@@ -49,12 +54,42 @@ def load_ground_truth() -> dict[str, SyntheticInvoiceRecord]:
     return records
 
 
+def create_benchmark_router(
+    state: dict,
+) -> LLMRouter:
+    """
+    Create an LLM router that excludes models
+    known to be unavailable.
+    """
+
+    unavailable_models = set(
+        state.get(
+            "unavailable_models",
+            []
+        )
+    )
+
+    base_router = create_llm_router()
+
+    if not unavailable_models:
+        return base_router
+
+    available_models = [
+        model
+        for model in base_router.models
+        if model.model
+        not in unavailable_models
+    ]
+
+    return LLMRouter(
+        models=available_models,
+        retry_policy=base_router.retry_policy,
+        circuit_breaker=base_router.circuit_breaker,
+    )
+
+
 def main() -> None:
     ground_truth = load_ground_truth()
-
-    pipeline = InvoiceExtractionPipeline()
-
-    evaluations = []
 
     state_manager = BenchmarkState(
         STATE_PATH
@@ -62,12 +97,27 @@ def main() -> None:
 
     state = state_manager.load()
 
+    router = create_benchmark_router(
+        state
+    )
+
+    pipeline = InvoiceExtractionPipeline(
+        invoice_extractor=None
+    )
+
+    # Replace the pipeline's extractor router
+    # with the benchmark-aware router.
+    pipeline.invoice_extractor.llm_router = router
+
+    evaluations = []
+
     print("=" * 80)
     print("INVOICE EXTRACTION BASELINE")
     print("=" * 80)
 
     print(
-        f"Documents configured: {NUMBER_OF_DOCUMENTS}"
+        f"Documents configured: "
+        f"{NUMBER_OF_DOCUMENTS}"
     )
 
     print(
@@ -75,22 +125,43 @@ def main() -> None:
         f"{len(state['completed'])}"
     )
 
-    if state["active_model"]:
-        print(
-            f"Previous active model: "
-            f"{state['active_model']}"
+    unavailable_models = set(
+        state.get(
+            "unavailable_models",
+            []
         )
+    )
+
+    if unavailable_models:
+        print(
+            "Previously unavailable models:"
+        )
+
+        for model in sorted(
+            unavailable_models
+        ):
+            print(f"  - {model}")
 
     print(
         f"Starting from invoice: "
         f"INV-{state['next_index']:05d}"
     )
 
+    print("\nActive benchmark models:")
+
+    for model in router.models:
+        print(
+            f"  - {model.provider}/"
+            f"{model.model}"
+        )
+
     for index in range(
         state["next_index"],
         NUMBER_OF_DOCUMENTS + 1,
     ):
-        invoice_number = f"INV-{index:05d}"
+        invoice_number = (
+            f"INV-{index:05d}"
+        )
 
         if invoice_number in state["completed"]:
             print(
@@ -125,13 +196,17 @@ def main() -> None:
                 prediction,
             )
 
-            evaluations.append(evaluation)
+            evaluations.append(
+                evaluation
+            )
 
             state["completed"].append(
                 invoice_number
             )
 
-            state["next_index"] = index + 1
+            state["next_index"] = (
+                index + 1
+            )
 
             state_manager.save(state)
 
@@ -159,22 +234,34 @@ def main() -> None:
                 exc.error_type
                 == LLMErrorType.QUOTA_EXHAUSTED
             ):
-                state["active_model"] = (
-                    exc.model
-                )
+                if exc.model not in state[
+                    "unavailable_models"
+                ]:
+                    state[
+                        "unavailable_models"
+                    ].append(exc.model)
 
                 state["next_index"] = index
 
-                state_manager.save(state)
+                state_manager.save(
+                    state
+                )
 
                 print()
+
                 print(
                     f"Quota exhausted for "
-                    f"{exc.provider}/{exc.model}."
+                    f"{exc.provider}/"
+                    f"{exc.model}."
                 )
 
                 print(
                     "Benchmark progress saved."
+                )
+
+                print(
+                    "The model will be "
+                    "excluded on the next run."
                 )
 
                 print(
@@ -185,19 +272,26 @@ def main() -> None:
 
             state["failed"].append(
                 {
-                    "invoice_number": invoice_number,
-                    "error_type": (
-                        exc.error_type.value
-                    ),
-                    "provider": exc.provider,
-                    "model": exc.model,
-                    "message": exc.message,
+                    "invoice_number":
+                        invoice_number,
+                    "error_type":
+                        exc.error_type.value,
+                    "provider":
+                        exc.provider,
+                    "model":
+                        exc.model,
+                    "message":
+                        exc.message,
                 }
             )
 
-            state["next_index"] = index + 1
+            state["next_index"] = (
+                index + 1
+            )
 
-            state_manager.save(state)
+            state_manager.save(
+                state
+            )
 
         except Exception as exc:
             print(
@@ -206,26 +300,36 @@ def main() -> None:
 
             state["failed"].append(
                 {
-                    "invoice_number": invoice_number,
-                    "error_type": "unknown",
-                    "provider": None,
-                    "model": None,
-                    "message": str(exc),
+                    "invoice_number":
+                        invoice_number,
+                    "error_type":
+                        "unknown",
+                    "provider":
+                        None,
+                    "model":
+                        None,
+                    "message":
+                        str(exc),
                 }
             )
 
-            state["next_index"] = index + 1
+            state["next_index"] = (
+                index + 1
+            )
 
-            state_manager.save(state)
+            state_manager.save(
+                state
+            )
 
     if not evaluations:
         print(
-            "\nNo new successful evaluations "
-            "in this run."
+            "\nNo new successful "
+            "evaluations in this run."
         )
 
         print(
-            f"Previously completed invoices: "
+            f"Previously completed "
+            f"invoices: "
             f"{len(state['completed'])}"
         )
 
@@ -276,7 +380,6 @@ def main() -> None:
     }
 
     print("\n")
-
     print("=" * 80)
     print("BASELINE RESULTS")
     print("=" * 80)
@@ -293,7 +396,9 @@ def main() -> None:
 
     print("\nField accuracy:")
 
-    for field, correct in field_accuracy.items():
+    for field, correct in (
+        field_accuracy.items()
+    ):
         accuracy = (
             correct
             / len(evaluations)
@@ -322,4 +427,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
