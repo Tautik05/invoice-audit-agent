@@ -30,9 +30,13 @@ Return the result as valid JSON matching the requested schema.
 Rules:
 - Extract only information explicitly present in the document.
 - Do not correct mathematical errors in the invoice.
-- Preserve the values exactly as printed.
-- Do not infer missing information.
-- If a field is not present, return null where permitted.
+- Preserve values as printed unless normalization is required by the schema.
+- Do not infer or fabricate missing information.
+- For optional identifiers such as purchase order numbers, return null
+  when the document indicates the value is unavailable, such as N/A,
+  NA, None, or a dash.
+- If a field is not present or explicitly unavailable, return null
+  where permitted.
 
 Document:
 {document_text}

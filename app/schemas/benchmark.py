@@ -14,5 +14,5 @@ class BenchmarkEvaluationSet(BaseModel):
     version: int = Field(gt=0)
     description: str = Field(min_length=1)
     documents: list[BenchmarkDocument] = Field(
-        min_length=1,
+        min_length=1
     )

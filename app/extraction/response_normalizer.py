@@ -17,11 +17,17 @@ def normalize_decimal(
     """
     Convert common LLM numeric representations into Decimal.
 
+    For percentage fields, both percentage-point and fractional
+    representations are normalized to a fractional Decimal.
+
     Examples:
         "$2,000.00" -> Decimal("2000.00")
         "2000.00"   -> Decimal("2000.00")
         "18%"       -> Decimal("0.18") when percentage=True
+        "18"        -> Decimal("0.18") when percentage=True
+        "0.18"      -> Decimal("0.18") when percentage=True
     """
+    had_percent = False
 
     if isinstance(value, Decimal):
         decimal_value = value
@@ -36,6 +42,7 @@ def normalize_decimal(
         cleaned = value.strip()
 
         if percentage:
+            had_percent = "%" in cleaned
             cleaned = cleaned.replace("%", "").strip()
 
         cleaned = re.sub(
@@ -56,16 +63,69 @@ def normalize_decimal(
                 f"Cannot normalize numeric value: {value!r}"
             ) from exc
 
-        if percentage and "%" in value:
-            decimal_value /= Decimal("100")
-
     else:
         raise TypeError(
             f"Unsupported numeric value type: "
             f"{type(value).__name__}"
         )
 
+    if percentage:
+        if had_percent:
+            decimal_value /= Decimal("100")
+
+        elif decimal_value > Decimal("1"):
+            decimal_value /= Decimal("100")
+
+        if (
+            decimal_value < Decimal("0")
+            or decimal_value > Decimal("1")
+        ):
+            raise ValueError(
+                f"Percentage value out of range: {value!r}"
+            )
+
     return decimal_value
+
+
+def normalize_optional_identifier(
+    value: Any,
+) -> str | None:
+    """
+    Normalize optional identifier fields returned by an LLM.
+
+    Values representing an explicitly unavailable identifier are
+    converted to None.
+
+    Examples:
+        None   -> None
+        ""     -> None
+        "N/A"  -> None
+        "NA"   -> None
+        "N.A." -> None
+        "NONE" -> None
+        "NULL" -> None
+        "-"    -> None
+        "PO-12345" -> "PO-12345"
+    """
+    if value is None:
+        return None
+
+    normalized = str(value).strip()
+
+    if not normalized:
+        return None
+
+    if normalized.upper() in {
+        "N/A",
+        "NA",
+        "N.A.",
+        "NONE",
+        "NULL",
+        "-",
+    }:
+        return None
+
+    return normalized
 
 
 def normalize_line_item(
@@ -92,7 +152,6 @@ def normalize_extraction_response(
     This function normalizes representation/formatting
     differences but does not invent missing invoice data.
     """
-
     data = json.loads(response_text)
 
     if not isinstance(data, dict):
@@ -132,31 +191,38 @@ def normalize_extraction_response(
         invoice_number=str(
             data["invoice_number"]
         ).strip(),
+
         vendor=str(
             data["vendor"]
         ).strip(),
+
         invoice_date=data.get(
             "invoice_date"
         ),
-        po_number=(
-            str(data["po_number"]).strip()
-            if data.get("po_number") is not None
-            else None
+
+        po_number=normalize_optional_identifier(
+            data.get("po_number")
         ),
+
         currency=str(
             data["currency"]
         ).strip().upper(),
+
         line_items=normalized_line_items,
+
         subtotal=normalize_decimal(
             data["subtotal"]
         ),
+
         tax_rate=normalize_decimal(
             data["tax_rate"],
             percentage=True,
         ),
+
         tax=normalize_decimal(
             data["tax"]
         ),
+
         total=normalize_decimal(
             data["total"]
         ),

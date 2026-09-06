@@ -65,6 +65,7 @@ data/synthetic/*
 
 data/benchmark/benchmark_state.json
 data/benchmark/benchmark_results.jsonl
+data/benchmark/benchmark_state_baseline.json
 # Keep directory structure
 !data/raw/.gitkeep
 !data/synthetic/.gitkeep
@@ -83,3 +84,6 @@ data/benchmark/benchmark_results.jsonl
 *.key
 credentials.json
 secrets.json
+
+
+app/evaluation/validation_metrics.py

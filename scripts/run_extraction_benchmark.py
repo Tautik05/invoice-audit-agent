@@ -2,13 +2,13 @@ import json
 import sys
 import time
 from pathlib import Path
-
 sys.path.insert(
     0,
     str(
         Path(__file__).resolve().parents[1]
     )
 )
+
 
 from app.evaluation.benchmark_metrics import (
     calculate_category_accuracy,
@@ -21,15 +21,19 @@ from app.evaluation.invoice_metrics import (
     InvoiceEvaluation,
     evaluate_invoice,
 )
+from app.evaluation.validation_metrics import (
+    evaluate_validation,
+)
 from app.extraction.document import PDFTextExtractor
 from app.extraction.extractor import InvoiceExtractor
+from app.extraction.normalizer import normalize_invoice
 from app.extraction.pipeline import InvoiceExtractionPipeline
 from app.llm.errors import LLMError, LLMErrorType
 from app.llm.router import LLMRouter
 from app.llm.router_config import create_llm_router
 from app.schemas.benchmark import BenchmarkEvaluationSet
 from app.schemas.synthetic import SyntheticInvoiceRecord
-
+from app.validation.engine import validate_invoice
 
 BENCHMARK_GROUND_TRUTH_PATH = Path(
     "data/benchmark/ground_truth.jsonl"
@@ -206,12 +210,8 @@ def evaluation_to_result(
         "total_correct": (
             evaluation.total_correct
         ),
-        "correct_fields": (
-            evaluation.correct_fields
-        ),
-        "total_fields": (
-            evaluation.total_fields
-        ),
+        "correct_fields": evaluation.correct_fields,
+        "total_fields": evaluation.total_fields,
         "accuracy": evaluation.accuracy,
     }
 
@@ -253,7 +253,6 @@ def result_to_evaluation(
             "total_correct"
         ],
     )
-
 
 def print_benchmark_configuration(
     evaluation_set: BenchmarkEvaluationSet,

@@ -24,7 +24,8 @@ class GroqProvider(LLMProvider):
             )
 
         self.client = Groq(
-            api_key=settings.groq_api_key
+            api_key=settings.groq_api_key,
+            max_retries=0,
         )
 
         self.model = model
@@ -67,6 +68,7 @@ class GroqProvider(LLMProvider):
                     ),
                     provider="groq",
                     model=self.model,
+                    retryable=False,
                 )
 
             return content
@@ -134,6 +136,7 @@ class GroqProvider(LLMProvider):
                 LLMErrorType.QUOTA_EXHAUSTED
             )
             retryable = False
+
         else:
             error_type = (
                 LLMErrorType.RATE_LIMIT
@@ -163,6 +166,12 @@ class GroqProvider(LLMProvider):
             )
             retryable = True
 
+        elif exc.status_code == 429:
+            error_type = (
+                LLMErrorType.RATE_LIMIT
+            )
+            retryable = True
+
         else:
             error_type = (
                 LLMErrorType.UNKNOWN
@@ -176,4 +185,3 @@ class GroqProvider(LLMProvider):
             model=self.model,
             retryable=retryable,
         )
-
