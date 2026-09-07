@@ -7,6 +7,9 @@ from app.schemas.purchase_order import (
     PurchaseOrder,
     PurchaseOrderLineItem,
 )
+from app.reconciliation.engine import (
+    build_ambiguous_result,
+)
 
 
 def make_invoice(
@@ -137,4 +140,16 @@ def test_reconcile_missing_purchase_order():
     assert result.po_found is False
     assert result.po_total is None
     assert result.variance is None
+    assert result.errors
+
+def test_build_ambiguous_result():
+    invoice = make_invoice()
+
+    result = build_ambiguous_result(
+        invoice,
+        candidate_count=3,
+    )
+
+    assert result.status == ReconciliationStatus.AMBIGUOUS
+    assert result.po_found is False
     assert result.errors

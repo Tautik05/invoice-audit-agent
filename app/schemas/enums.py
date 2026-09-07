@@ -19,6 +19,7 @@ class ReconciliationStatus(str, Enum):
     MATCHED = "matched"
     VARIANCE = "variance"
     NOT_FOUND = "not_found"
+    AMBIGUOUS = "ambiguous"
     FAILED = "failed"
 
 
@@ -34,3 +35,8 @@ class InvoiceStatus(str, Enum):
     APPROVED = "approved"
     REJECTED = "rejected"
     SETTLED = "settled"
+
+class DecisionAction(str, Enum):
+    AUTO_APPROVE = "auto_approve"
+    HUMAN_REVIEW = "human_review"
+    REJECT = "reject"

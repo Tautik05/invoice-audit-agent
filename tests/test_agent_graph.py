@@ -2,7 +2,10 @@ from decimal import Decimal
 from pathlib import Path
 
 from app.agent.graph import (
+    build_audit_graph,
     build_graph,
+    create_reconciliation_node,
+    decision_node,
     extraction_node,
     reflection_node,
     validation_node,
@@ -10,6 +13,9 @@ from app.agent.graph import (
 from app.agent.state import InvoiceAuditState
 from app.schemas.extraction import ExtractedInvoice
 from app.schemas.purchase_order import PurchaseOrder
+from app.schemas.enums import ReconciliationStatus
+
+
 
 def test_extraction_node_normalizes_invoice(
     monkeypatch,
@@ -561,4 +567,382 @@ def test_reconciliation_node_searches_erp_by_vendor_when_po_missing():
     assert (
         result["reconciliation_result"].status.value
         == "matched"
+    )
+
+
+def test_reconciliation_node_returns_not_found_when_vendor_has_no_purchase_orders():
+    from app.schemas.invoice import Invoice
+
+    invoice = Invoice(
+        invoice_number="INV-RECON-003",
+        vendor="Unknown Vendor",
+        invoice_date=None,
+        po_number=None,
+        currency="USD",
+        line_items=[
+            {
+                "description": "Monitor",
+                "quantity": 10,
+                "unit_price": Decimal("200.00"),
+            }
+        ],
+        subtotal=Decimal("2000.00"),
+        tax_rate=Decimal("0.18"),
+        tax=Decimal("360.00"),
+        total=Decimal("2360.00"),
+    )
+
+    class FakeERPTools:
+        def search_erp_by_vendor(self, args):
+            assert args.vendor_name == "Unknown Vendor"
+            return []
+
+        def query_erp_by_po(self, args):
+            raise AssertionError(
+                "PO query should not be used when PO is missing."
+            )
+
+    node = create_reconciliation_node(
+        FakeERPTools()
+    )
+
+    result = node(
+        {
+            "workflow_id": "wf-recon-003",
+            "invoice": invoice,
+        }
+    )
+
+    reconciliation_result = result[
+        "reconciliation_result"
+    ]
+
+    assert (
+        reconciliation_result.status
+        == ReconciliationStatus.NOT_FOUND
+    )
+    assert reconciliation_result.po_found is False
+
+
+def test_reconciliation_node_returns_ambiguous_when_vendor_has_multiple_purchase_orders():
+    from app.schemas.invoice import Invoice
+
+    invoice = Invoice(
+        invoice_number="INV-RECON-004",
+        vendor="ABC Supplies",
+        invoice_date=None,
+        po_number=None,
+        currency="USD",
+        line_items=[
+            {
+                "description": "Monitor",
+                "quantity": 10,
+                "unit_price": Decimal("200.00"),
+            }
+        ],
+        subtotal=Decimal("2000.00"),
+        tax_rate=Decimal("0.18"),
+        tax=Decimal("360.00"),
+        total=Decimal("2360.00"),
+    )
+
+    purchase_order_1 = PurchaseOrder(
+        po_number="PO-8821",
+        vendor="ABC Supplies",
+        currency="USD",
+        line_items=[
+            {
+                "description": "Monitor",
+                "quantity": 10,
+                "unit_price": Decimal("200.00"),
+            }
+        ],
+        subtotal=Decimal("2000.00"),
+        tax_rate=Decimal("0.18"),
+        tax=Decimal("360.00"),
+        total=Decimal("2360.00"),
+    )
+
+    purchase_order_2 = PurchaseOrder(
+        po_number="PO-9941",
+        vendor="ABC Supplies",
+        currency="USD",
+        line_items=[
+            {
+                "description": "Laptop",
+                "quantity": 5,
+                "unit_price": Decimal("800.00"),
+            }
+        ],
+        subtotal=Decimal("4000.00"),
+        tax_rate=Decimal("0.18"),
+        tax=Decimal("720.00"),
+        total=Decimal("4720.00"),
+    )
+
+    class FakeERPTools:
+        def search_erp_by_vendor(self, args):
+            assert args.vendor_name == "ABC Supplies"
+
+            return [
+                purchase_order_1,
+                purchase_order_2,
+            ]
+
+        def query_erp_by_po(self, args):
+            raise AssertionError(
+                "PO query should not be used when PO is missing."
+            )
+
+    node = create_reconciliation_node(
+        FakeERPTools()
+    )
+
+    result = node(
+        {
+            "workflow_id": "wf-recon-004",
+            "invoice": invoice,
+        }
+    )
+
+    reconciliation_result = result[
+        "reconciliation_result"
+    ]
+
+    assert (
+        reconciliation_result.status
+        == ReconciliationStatus.AMBIGUOUS
+    )
+
+    assert (
+        "Multiple purchase orders"
+        in reconciliation_result.errors[0]
+    )
+
+
+def test_decision_node_auto_approves_matched_reconciliation():
+    from app.agent.graph import decision_node
+    from app.schemas.reconciliation import ReconciliationResult
+
+    reconciliation_result = ReconciliationResult(
+        status=ReconciliationStatus.MATCHED,
+        po_found=True,
+        vendor_matched=True,
+        currency_matched=True,
+        line_items_matched=True,
+        invoice_total=Decimal("2360.00"),
+        po_total=Decimal("2360.00"),
+        variance=Decimal("0.00"),
+        errors=[],
+    )
+
+    result = decision_node(
+        {
+            "reconciliation_result": reconciliation_result,
+        }
+    )
+
+    assert (
+        result["decision_result"].action.value
+        == "auto_approve"
+    )
+
+
+def test_decision_node_routes_variance_to_human_review():
+    from app.agent.graph import decision_node
+    from app.schemas.reconciliation import ReconciliationResult
+
+    reconciliation_result = ReconciliationResult(
+        status=ReconciliationStatus.VARIANCE,
+        po_found=True,
+        vendor_matched=True,
+        currency_matched=True,
+        line_items_matched=False,
+        invoice_total=Decimal("2500.00"),
+        po_total=Decimal("2360.00"),
+        variance=Decimal("140.00"),
+        errors=[
+            "Invoice total does not match the purchase order."
+        ],
+    )
+
+    result = decision_node(
+        {
+            "reconciliation_result": reconciliation_result,
+        }
+    )
+
+    assert (
+        result["decision_result"].action.value
+        == "human_review"
+    )
+
+def test_audit_graph_auto_approves_matched_invoice(
+    monkeypatch,
+):
+    from app.schemas.invoice import Invoice
+
+    extracted_invoice = ExtractedInvoice(
+        invoice_number="INV-AUDIT-001",
+        vendor="ABC Supplies",
+        invoice_date=None,
+        po_number="PO-8821",
+        currency="USD",
+        line_items=[
+            {
+                "description": "Monitor",
+                "quantity": 10,
+                "unit_price": Decimal("200.00"),
+            }
+        ],
+        subtotal=Decimal("2000.00"),
+        tax_rate=Decimal("0.18"),
+        tax=Decimal("360.00"),
+        total=Decimal("2360.00"),
+    )
+
+    purchase_order = PurchaseOrder(
+        po_number="PO-8821",
+        vendor="ABC Supplies",
+        currency="USD",
+        line_items=[
+            {
+                "description": "Monitor",
+                "quantity": 10,
+                "unit_price": Decimal("200.00"),
+            }
+        ],
+        subtotal=Decimal("2000.00"),
+        tax_rate=Decimal("0.18"),
+        tax=Decimal("360.00"),
+        total=Decimal("2360.00"),
+    )
+
+    class FakePipeline:
+        def process(
+            self,
+            pdf_path: Path,
+            feedback: str | None = None,
+        ) -> ExtractedInvoice:
+            return extracted_invoice
+
+    class FakeERPTools:
+        def query_erp_by_po(self, args):
+            assert args.po_number == "PO-8821"
+            return purchase_order
+
+        def search_erp_by_vendor(self, args):
+            raise AssertionError(
+                "Vendor search should not be used."
+            )
+
+    monkeypatch.setattr(
+        "app.agent.graph.InvoiceExtractionPipeline",
+        FakePipeline,
+    )
+
+    graph = build_audit_graph(
+        FakeERPTools()
+    )
+
+    result = graph.invoke(
+        {
+            "workflow_id": "wf-audit-001",
+            "document_path": "data/test/invoice.pdf",
+            "extraction_attempts": 0,
+        }
+    )
+
+    assert (
+        result["reconciliation_result"].status
+        == ReconciliationStatus.MATCHED
+    )
+
+    assert (
+        result["decision_result"].action.value
+        == "auto_approve"
+    )
+
+
+def test_audit_graph_routes_variance_to_human_review(
+    monkeypatch,
+):
+    extracted_invoice = ExtractedInvoice(
+        invoice_number="INV-AUDIT-002",
+        vendor="ABC Supplies",
+        invoice_date=None,
+        po_number="PO-8821",
+        currency="USD",
+        line_items=[
+            {
+                "description": "Monitor",
+                "quantity": 10,
+                "unit_price": Decimal("200.00"),
+            }
+        ],
+        subtotal=Decimal("2000.00"),
+        tax_rate=Decimal("0.25"),
+        tax=Decimal("500.00"),
+        total=Decimal("2500.00"),
+    )
+
+    purchase_order = PurchaseOrder(
+        po_number="PO-8821",
+        vendor="ABC Supplies",
+        currency="USD",
+        line_items=[
+            {
+                "description": "Monitor",
+                "quantity": 10,
+                "unit_price": Decimal("200.00"),
+            }
+        ],
+        subtotal=Decimal("2000.00"),
+        tax_rate=Decimal("0.18"),
+        tax=Decimal("360.00"),
+        total=Decimal("2360.00"),
+    )
+
+    class FakePipeline:
+        def process(
+            self,
+            pdf_path: Path,
+            feedback: str | None = None,
+        ) -> ExtractedInvoice:
+            return extracted_invoice
+
+    class FakeERPTools:
+        def query_erp_by_po(self, args):
+            return purchase_order
+
+        def search_erp_by_vendor(self, args):
+            raise AssertionError(
+                "Vendor search should not be used."
+            )
+
+    monkeypatch.setattr(
+        "app.agent.graph.InvoiceExtractionPipeline",
+        FakePipeline,
+    )
+
+    graph = build_audit_graph(
+        FakeERPTools()
+    )
+
+    result = graph.invoke(
+        {
+            "workflow_id": "wf-audit-002",
+            "document_path": "data/test/invoice.pdf",
+            "extraction_attempts": 0,
+        }
+    )
+
+    assert (
+        result["reconciliation_result"].status
+        == ReconciliationStatus.VARIANCE
+    )
+
+    assert (
+        result["decision_result"].action.value
+        == "human_review"
     )

@@ -125,3 +125,25 @@ def reconcile_invoice(
         variance=variance,
         errors=errors,
     )
+
+
+def build_ambiguous_result(
+    invoice: Invoice,
+    candidate_count: int,
+) -> ReconciliationResult:
+    """Build a reconciliation result when multiple POs are possible."""
+
+    return ReconciliationResult(
+        status=ReconciliationStatus.AMBIGUOUS,
+        po_found=False,
+        vendor_matched=False,
+        currency_matched=False,
+        line_items_matched=False,
+        invoice_total=invoice.total,
+        errors=[
+            (
+                f"Multiple purchase orders ({candidate_count}) "
+                "matched the invoice vendor; manual review is required."
+            )
+        ],
+    )
