@@ -18,7 +18,16 @@ class FakeDocumentExtractor:
 
 
 class FakeInvoiceExtractor:
-    def extract(self, document_text: str) -> ExtractedInvoice:
+    def __init__(self):
+        self.received_feedback = None
+
+    def extract(
+        self,
+        document_text: str,
+        feedback: str | None = None,
+    ) -> ExtractedInvoice:
+        self.received_feedback = feedback
+
         return ExtractedInvoice(
             invoice_number="INV-TEST-001",
             vendor="Test Vendor",
@@ -37,6 +46,30 @@ class FakeInvoiceExtractor:
             tax="18.00",
             total="118.00",
         )
+
+def test_pipeline_passes_reflection_feedback_to_invoice_extractor(
+    tmp_path: Path,
+):
+    pdf_path = tmp_path / "invoice.pdf"
+    pdf_path.write_bytes(b"fake pdf")
+
+    invoice_extractor = FakeInvoiceExtractor()
+
+    pipeline = InvoiceExtractionPipeline(
+        document_extractor=FakeDocumentExtractor(),
+        invoice_extractor=invoice_extractor,
+    )
+
+    feedback = (
+        "Tax mismatch: expected 18.00, got 20.00."
+    )
+
+    pipeline.process(
+        pdf_path,
+        feedback=feedback,
+    )
+
+    assert invoice_extractor.received_feedback == feedback
 
 
 def test_pipeline_connects_document_and_invoice_extractors(

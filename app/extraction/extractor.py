@@ -1,10 +1,10 @@
+from app.extraction.response_normalizer import (
+    normalize_extraction_response,
+)
 from app.llm.router import LLMRouter
 from app.llm.router_config import create_llm_router
 from app.schemas.extraction import ExtractedInvoice
 
-from app.extraction.response_normalizer import (
-    normalize_extraction_response,
-)
 
 class InvoiceExtractor:
     """Extract structured invoice data using an LLM router."""
@@ -21,6 +21,7 @@ class InvoiceExtractor:
     def extract(
         self,
         document_text: str,
+        feedback: str | None = None,
     ) -> ExtractedInvoice:
         prompt = f"""
 Extract the invoice information from the document below.
@@ -37,19 +38,33 @@ Rules:
   NA, None, or a dash.
 - If a field is not present or explicitly unavailable, return null
   where permitted.
+"""
 
+        if feedback:
+            prompt += f"""
+Previous extraction attempt failed deterministic validation.
+
+Use the following feedback to re-examine the source document:
+
+{feedback}
+
+Important:
+- Re-examine the original document carefully.
+- Extract the values actually printed in the document.
+- Do not mathematically correct the invoice.
+- Do not change a value merely because it appears financially unusual.
+"""
+
+        prompt += f"""
 Document:
 {document_text}
 """
 
-        response_text = (
-            self.llm_router.generate_structured(
-                prompt=prompt,
-                response_schema=ExtractedInvoice,
-            )
+        response_text = self.llm_router.generate_structured(
+            prompt=prompt,
+            response_schema=ExtractedInvoice,
         )
 
         return normalize_extraction_response(
             response_text
         )
-

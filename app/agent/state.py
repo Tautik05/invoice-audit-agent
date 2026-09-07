@@ -14,6 +14,7 @@ class InvoiceAuditState(TypedDict, total=False):
     reconciliation_result: ReconciliationResult | None
     workflow_status: WorkflowStatus
     extraction_attempts: int
+    reflection_feedback: str | None
     human_approval_required: bool
     human_approved: bool
     error: str | None

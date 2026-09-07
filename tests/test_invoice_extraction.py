@@ -6,11 +6,16 @@ from app.extraction.extractor import InvoiceExtractor
 class FakeLLMRouter:
     """Deterministic fake router for unit testing."""
 
+    def __init__(self):
+        self.last_prompt = None
+
     def generate_structured(
         self,
         prompt: str,
         response_schema,
     ) -> str:
+        self.last_prompt = prompt
+
         return """
         {
             "invoice_number": "INV-1001",
@@ -32,6 +37,27 @@ class FakeLLMRouter:
         }
         """
 
+
+def test_extract_invoice_includes_reflection_feedback_in_prompt():
+    router = FakeLLMRouter()
+
+    extractor = InvoiceExtractor(
+        llm_router=router
+    )
+
+    feedback = (
+        "Tax mismatch: expected 360.00, got 500.00."
+    )
+
+    extractor.extract(
+        "Invoice Number: INV-1001",
+        feedback=feedback,
+    )
+
+    assert feedback in router.last_prompt
+    assert "Do not mathematically correct the invoice" in (
+        router.last_prompt
+    )
 
 def test_extract_invoice_from_text():
     document_text = """

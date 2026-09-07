@@ -3,7 +3,6 @@ from app.schemas.purchase_order import PurchaseOrder
 from app.schemas.vendor import Vendor
 
 from app.erp.repository import ERPRepository
-from app.erp.unit_of_work import ERPUnitOfWork
 
 
 class ERPService:
@@ -12,16 +11,16 @@ class ERPService:
     def __init__(
         self,
         repository: ERPRepository,
-        unit_of_work: ERPUnitOfWork | None = None,
     ) -> None:
         self.repository = repository
-        self.unit_of_work = unit_of_work
 
     def get_vendor(
         self,
         vendor_id: str,
     ) -> Vendor | None:
-        return self.repository.get_vendor(vendor_id)
+        return self.repository.get_vendor(
+            vendor_id
+        )
 
     def get_purchase_order(
         self,

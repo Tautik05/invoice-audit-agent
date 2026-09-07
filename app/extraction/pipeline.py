@@ -17,7 +17,6 @@ class InvoiceExtractionPipeline:
         self.document_extractor = (
             document_extractor or PDFTextExtractor()
         )
-
         self.invoice_extractor = (
             invoice_extractor
             or InvoiceExtractor(
@@ -28,19 +27,19 @@ class InvoiceExtractionPipeline:
     def process(
         self,
         pdf_path: Path,
+        feedback: str | None = None,
     ) -> ExtractedInvoice:
-        document_text = (
-            self.document_extractor.extract_text(
-                pdf_path
-            )
+        """Run the complete PDF-to-structured-invoice extraction pipeline."""
+        document_text = self.document_extractor.extract_text(
+            pdf_path
         )
 
         if not document_text:
             raise ValueError(
-                f"No text could be extracted from PDF: "
-                f"{pdf_path}"
+                f"No text could be extracted from PDF: {pdf_path}"
             )
 
         return self.invoice_extractor.extract(
-            document_text
+            document_text,
+            feedback=feedback,
         )
