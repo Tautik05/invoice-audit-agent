@@ -40,6 +40,7 @@ def test_purchase_order_schema():
             }
         ],
         subtotal=Decimal("2000.00"),
+        tax_rate=Decimal("0.18"),
         tax=Decimal("360.00"),
         total=Decimal("2360.00"),
     )
@@ -47,5 +48,6 @@ def test_purchase_order_schema():
     assert po.po_number == "PO-001"
     assert po.vendor == "ABC Supplies"
     assert po.subtotal == Decimal("2000.00")
+    assert po.tax_rate == Decimal("0.18")
     assert po.tax == Decimal("360.00")
     assert po.total == Decimal("2360.00")

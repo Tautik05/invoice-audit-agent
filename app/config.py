@@ -20,8 +20,14 @@ class Settings:
             "qwen/qwen3.6-27b",
         )
 
+        self.database_url = os.getenv(
+            "DATABASE_URL"
+        )
+
         if not self.gemini_api_key:
-            raise ValueError("GEMINI_API_KEY is not set.")
+            raise ValueError(
+                "GEMINI_API_KEY is not set."
+            )
 
 
 settings = Settings()

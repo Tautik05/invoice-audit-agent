@@ -13,9 +13,8 @@ class PurchaseOrder(BaseModel):
     po_number: str = Field(min_length=1)
     vendor: str = Field(min_length=1)
     currency: str = Field(min_length=3, max_length=3)
-
     line_items: list[PurchaseOrderLineItem] = Field(min_length=1)
-
     subtotal: Decimal = Field(ge=0)
+    tax_rate: Decimal = Field(ge=0)
     tax: Decimal = Field(ge=0)
     total: Decimal = Field(ge=0)

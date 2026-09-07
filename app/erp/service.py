@@ -3,22 +3,33 @@ from app.schemas.purchase_order import PurchaseOrder
 from app.schemas.vendor import Vendor
 
 from app.erp.repository import ERPRepository
+from app.erp.unit_of_work import ERPUnitOfWork
 
 
 class ERPService:
     """Business operations exposed by the mock ERP."""
 
-    def __init__(self, repository: ERPRepository) -> None:
+    def __init__(
+        self,
+        repository: ERPRepository,
+        unit_of_work: ERPUnitOfWork | None = None,
+    ) -> None:
         self.repository = repository
+        self.unit_of_work = unit_of_work
 
-    def get_vendor(self, vendor_id: str) -> Vendor | None:
+    def get_vendor(
+        self,
+        vendor_id: str,
+    ) -> Vendor | None:
         return self.repository.get_vendor(vendor_id)
 
     def get_purchase_order(
         self,
         po_number: str,
     ) -> PurchaseOrder | None:
-        return self.repository.get_purchase_order(po_number)
+        return self.repository.get_purchase_order(
+            po_number
+        )
 
     def search_purchase_orders_by_vendor(
         self,
@@ -36,12 +47,16 @@ class ERPService:
             invoice_number
         )
 
-    def commit_invoice(self, invoice: Invoice) -> str:
-        """Settle an invoice in the ERP."""
-
-        if self.check_duplicate_invoice(invoice.invoice_number):
+    def commit_invoice(
+        self,
+        invoice: Invoice,
+    ) -> str:
+        """Persist and settle an invoice."""
+        if self.check_duplicate_invoice(
+            invoice.invoice_number
+        ):
             return "already_settled"
 
-        self.repository.settle_invoice(invoice.invoice_number)
+        self.repository.settle_invoice(invoice)
 
         return "settled"
