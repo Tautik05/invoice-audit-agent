@@ -46,16 +46,17 @@ class ERPService:
             invoice_number
         )
 
-    def commit_invoice(
+
+
+    def settle_invoice(
         self,
         invoice: Invoice,
+        workflow_id: str,
     ) -> str:
         """Persist and settle an invoice."""
-        if self.check_duplicate_invoice(
-            invoice.invoice_number
-        ):
-            return "already_settled"
 
-        self.repository.settle_invoice(invoice)
+        return self.repository.settle_invoice(
+            invoice=invoice,
+            workflow_id=workflow_id,
+        )
 
-        return "settled"

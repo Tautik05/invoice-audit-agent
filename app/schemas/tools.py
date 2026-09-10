@@ -11,3 +11,8 @@ class SearchPurchaseOrdersArgs(BaseModel):
 
 class CheckDuplicateInvoiceArgs(BaseModel):
     invoice_number: str = Field(min_length=1)
+
+
+class SettleInvoiceArgs(BaseModel):
+    invoice_number: str = Field(min_length=1)
+    workflow_id: str = Field(min_length=1)

@@ -1,21 +1,28 @@
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import Command
+from sqlalchemy import select
+
 from app.agent.graph import (
     build_audit_graph,
     build_graph,
     create_reconciliation_node,
+    create_settlement_node,
     decision_node,
     extraction_node,
     reflection_node,
     validation_node,
 )
+
 from app.agent.state import InvoiceAuditState
+from app.agent.tools.erp_tools import ERPTools
+from app.db.models.invoice import Invoice as InvoiceModel
+from app.schemas.enums import ReconciliationStatus
 from app.schemas.extraction import ExtractedInvoice
 from app.schemas.purchase_order import PurchaseOrder
-from app.schemas.enums import ReconciliationStatus
-
-
 
 def test_extraction_node_normalizes_invoice(
     monkeypatch,
@@ -778,6 +785,8 @@ def test_decision_node_routes_variance_to_human_review():
     )
 
 def test_audit_graph_auto_approves_matched_invoice(
+    erp_service,
+    session_factory,
     monkeypatch,
 ):
     from app.schemas.invoice import Invoice
@@ -842,9 +851,9 @@ def test_audit_graph_auto_approves_matched_invoice(
     )
 
     graph = build_audit_graph(
-        FakeERPTools()
+        FakeERPTools(),
+        session_factory=session_factory,
     )
-
     result = graph.invoke(
         {
             "workflow_id": "wf-audit-001",
@@ -862,7 +871,16 @@ def test_audit_graph_auto_approves_matched_invoice(
         result["decision_result"].action.value
         == "auto_approve"
     )
+    with session_factory() as session:
+        invoice_model = session.scalar(
+            select(InvoiceModel).where(
+                InvoiceModel.invoice_number
+                == "INV-AUDIT-001"
+            )
+        )
 
+    assert invoice_model is not None
+    assert invoice_model.status == "settled"
 
 def test_audit_graph_routes_variance_to_human_review(
     monkeypatch,
@@ -946,3 +964,330 @@ def test_audit_graph_routes_variance_to_human_review(
         result["decision_result"].action.value
         == "human_review"
     )
+
+def test_audit_graph_interrupts_for_human_review(
+    erp_service,
+    tmp_path,
+):
+    """Verify that risky invoices pause for human review."""
+
+    extracted_invoice = ExtractedInvoice(
+        invoice_number="INV-HITL-001",
+        vendor="ABC Supplies",
+        invoice_date=None,
+        po_number="PO-8821",
+        currency="USD",
+        line_items=[
+            {
+                "description": "Monitor",
+                "quantity": 10,
+                "unit_price": Decimal("200.00"),
+            }
+        ],
+        subtotal=Decimal("2000.00"),
+        tax_rate=Decimal("0.25"),
+        tax=Decimal("500.00"),
+        total=Decimal("2500.00"),
+    )
+
+    class FakePipeline:
+        def process(
+            self,
+            pdf_path: Path,
+            feedback: str | None = None,
+        ) -> ExtractedInvoice:
+            return extracted_invoice
+
+    pipeline = FakePipeline()
+
+    graph = build_audit_graph(
+        ERPTools(erp_service),
+        extraction_pipeline=pipeline,
+        checkpointer=MemorySaver(),
+    )
+
+    document_path = tmp_path / "invoice.pdf"
+    document_path.write_bytes(b"fake pdf")
+
+    config = {
+        "configurable": {
+            "thread_id": "hitl-test-001",
+        }
+    }
+
+    result = graph.invoke(
+        {
+            "workflow_id": "hitl-test-001",
+            "document_path": str(document_path),
+            "extraction_attempts": 0,
+            "reflection_feedback": None,
+        },
+        config=config,
+    )
+
+    assert "__interrupt__" in result
+    assert len(result["__interrupt__"]) == 1
+
+    interrupt_value = result["__interrupt__"][0].value
+
+    assert interrupt_value["type"] == "invoice_review"
+
+    assert (
+        interrupt_value["message"]
+        == "Human approval is required before continuing."
+    )
+
+    assert (
+        interrupt_value["invoice"]["invoice_number"]
+        == "INV-HITL-001"
+    )
+
+
+def test_audit_graph_resumes_after_human_approval(
+    erp_service,
+    session_factory,
+    tmp_path,
+):
+    """Verify that a human-approved workflow can resume."""
+
+    extracted_invoice = ExtractedInvoice(
+        invoice_number="INV-HITL-002",
+        vendor="ABC Supplies",
+        invoice_date=None,
+        po_number="PO-8821",
+        currency="USD",
+        line_items=[
+            {
+                "description": "Monitor",
+                "quantity": 10,
+                "unit_price": Decimal("200.00"),
+            }
+        ],
+        subtotal=Decimal("2000.00"),
+        tax_rate=Decimal("0.25"),
+        tax=Decimal("500.00"),
+        total=Decimal("2500.00"),
+    )
+
+    class FakePipeline:
+        def process(
+            self,
+            pdf_path: Path,
+            feedback: str | None = None,
+        ) -> ExtractedInvoice:
+            return extracted_invoice
+
+    graph = build_audit_graph(
+        ERPTools(erp_service),
+        extraction_pipeline=FakePipeline(),
+        checkpointer=MemorySaver(),
+        session_factory=session_factory,
+    )
+
+    document_path = tmp_path / "invoice.pdf"
+    document_path.write_bytes(b"fake pdf")
+
+    config = {
+        "configurable": {
+            "thread_id": "hitl-test-002",
+        }
+    }
+
+    initial_state: InvoiceAuditState = {
+        "workflow_id": "hitl-test-002",
+        "document_path": str(document_path),
+        "extraction_attempts": 0,
+        "reflection_feedback": None,
+    }
+
+    interrupted_result = graph.invoke(
+        initial_state,
+        config=config,
+    )
+
+    assert "__interrupt__" in interrupted_result
+
+    resumed_result = graph.invoke(
+        Command(resume="approved"),
+        config=config,
+    )
+
+    assert resumed_result["human_decision"].value == "approved"
+    assert resumed_result["workflow_status"].value == "completed"
+
+    with session_factory() as session:
+        invoice_model = session.scalar(
+            select(InvoiceModel).where(
+                InvoiceModel.invoice_number
+                == "INV-HITL-002"
+            )
+        )
+
+    assert invoice_model is not None
+    assert invoice_model.status == "settled"
+
+
+def test_audit_graph_does_not_settle_after_human_rejection(
+    erp_service,
+    session_factory,
+    tmp_path,
+):
+    """Verify that a rejected invoice is never settled."""
+
+    extracted_invoice = ExtractedInvoice(
+        invoice_number="INV-HITL-003",
+        vendor="ABC Supplies",
+        invoice_date=None,
+        po_number="PO-8821",
+        currency="USD",
+        line_items=[
+            {
+                "description": "Monitor",
+                "quantity": 10,
+                "unit_price": Decimal("200.00"),
+            }
+        ],
+        subtotal=Decimal("2000.00"),
+        tax_rate=Decimal("0.25"),
+        tax=Decimal("500.00"),
+        total=Decimal("2500.00"),
+    )
+
+    class FakePipeline:
+        def process(
+            self,
+            pdf_path: Path,
+            feedback: str | None = None,
+        ) -> ExtractedInvoice:
+            return extracted_invoice
+
+    graph = build_audit_graph(
+        ERPTools(erp_service),
+        extraction_pipeline=FakePipeline(),
+        checkpointer=MemorySaver(),
+        session_factory=session_factory,
+    )
+
+    document_path = tmp_path / "invoice.pdf"
+    document_path.write_bytes(b"fake pdf")
+
+    config = {
+        "configurable": {
+            "thread_id": "hitl-test-003",
+        }
+    }
+
+    initial_state: InvoiceAuditState = {
+        "workflow_id": "hitl-test-003",
+        "document_path": str(document_path),
+        "extraction_attempts": 0,
+        "reflection_feedback": None,
+    }
+
+    interrupted_result = graph.invoke(
+        initial_state,
+        config=config,
+    )
+
+    assert "__interrupt__" in interrupted_result
+
+    resumed_result = graph.invoke(
+        Command(resume="rejected"),
+        config=config,
+    )
+
+    assert resumed_result["human_decision"].value == "rejected"
+    assert resumed_result["workflow_status"].value == "rejected"
+
+    with session_factory() as session:
+        invoice_model = session.scalar(
+            select(InvoiceModel).where(
+                InvoiceModel.invoice_number
+                == "INV-HITL-003"
+            )
+        )
+
+    assert invoice_model is None
+
+
+def test_settlement_node_rejects_unauthorized_invoice(
+    session_factory,
+):
+    """Verify that settlement requires explicit authorization."""
+
+    from app.schemas.decision import DecisionResult
+    from app.schemas.enums import (
+        DecisionAction,
+        HumanDecision,
+        ValidationStatus,
+    )
+    from app.schemas.invoice import Invoice
+    from app.schemas.reconciliation import ReconciliationResult
+    from app.schemas.validation import ValidationResult
+
+    invoice = Invoice(
+        invoice_number="INV-UNAUTHORIZED-001",
+        vendor="ABC Supplies",
+        invoice_date=None,
+        po_number="PO-8821",
+        currency="USD",
+        line_items=[
+            {
+                "description": "Monitor",
+                "quantity": 10,
+                "unit_price": Decimal("200.00"),
+            }
+        ],
+        subtotal=Decimal("2000.00"),
+        tax_rate=Decimal("0.18"),
+        tax=Decimal("360.00"),
+        total=Decimal("2360.00"),
+    )
+
+    validation_result = ValidationResult(
+        status=ValidationStatus.PASSED,
+        calculated_subtotal=Decimal("2000.00"),
+        calculated_tax=Decimal("360.00"),
+        calculated_total=Decimal("2360.00"),
+        subtotal_valid=True,
+        tax_valid=True,
+        total_valid=True,
+        currency_valid=True,
+        errors=[],
+    )
+
+    reconciliation_result = ReconciliationResult(
+        status=ReconciliationStatus.VARIANCE,
+        po_found=True,
+        vendor_matched=True,
+        currency_matched=True,
+        line_items_matched=False,
+        invoice_total=Decimal("2360.00"),
+        po_total=Decimal("2360.00"),
+        variance=Decimal("0.00"),
+        errors=["Invoice requires human review."],
+    )
+
+    decision_result = DecisionResult(
+        action=DecisionAction.HUMAN_REVIEW,
+        reasons=["Invoice requires human review."],
+    )
+
+    settlement_node = create_settlement_node(
+        session_factory
+    )
+
+    state: InvoiceAuditState = {
+        "workflow_id": "wf-unauthorized-001",
+        "invoice": invoice,
+        "validation_result": validation_result,
+        "reconciliation_result": reconciliation_result,
+        "decision_result": decision_result,
+        "human_decision": HumanDecision.REJECTED,
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="not authorized for settlement",
+    ):
+        settlement_node(state)

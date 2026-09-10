@@ -1,7 +1,8 @@
 from decimal import Decimal
 
 from app.schemas.invoice import Invoice
-
+from sqlalchemy import func, select
+from app.db.models.audit_event import AuditEvent
 
 def test_get_purchase_order(erp_service):
     po = erp_service.get_purchase_order("PO-8821")
@@ -49,8 +50,10 @@ def test_duplicate_invoice_detection(erp_service):
         "INV-001"
     ) is False
 
-    result = erp_service.commit_invoice(invoice)
-
+    result = erp_service.settle_invoice(
+        invoice,
+        workflow_id="test-workflow-001",
+    )
     assert result == "settled"
 
     assert erp_service.check_duplicate_invoice(
@@ -58,7 +61,10 @@ def test_duplicate_invoice_detection(erp_service):
     ) is True
 
 
-def test_duplicate_commit_is_idempotent(erp_service):
+def test_duplicate_commit_is_idempotent(
+    erp_service,
+    session_factory,
+):
     invoice = Invoice(
         invoice_number="INV-002",
         vendor="ABC Supplies",
@@ -77,8 +83,23 @@ def test_duplicate_commit_is_idempotent(erp_service):
         total=Decimal("2360.00"),
     )
 
-    first_result = erp_service.commit_invoice(invoice)
-    second_result = erp_service.commit_invoice(invoice)
+    first_result = erp_service.settle_invoice(
+        invoice,
+        workflow_id="test-workflow-002",
+    )
 
+    second_result = erp_service.settle_invoice(
+        invoice,
+        workflow_id="test-workflow-002",
+    )
+
+    with session_factory() as session:
+        audit_count = session.scalar(
+            select(func.count(AuditEvent.id)).where(
+                AuditEvent.workflow_id == "test-workflow-002"
+            )
+        )
+
+    assert audit_count == 1
     assert first_result == "settled"
     assert second_result == "already_settled"

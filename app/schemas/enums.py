@@ -40,3 +40,14 @@ class DecisionAction(str, Enum):
     AUTO_APPROVE = "auto_approve"
     HUMAN_REVIEW = "human_review"
     REJECT = "reject"
+
+
+class AuditEventType(str, Enum):
+    EXTRACTION_COMPLETED = "extraction_completed"
+    VALIDATION_COMPLETED = "validation_completed"
+    RECONCILIATION_COMPLETED = "reconciliation_completed"
+    DECISION_MADE = "decision_made"
+    HUMAN_REVIEW_REQUESTED = "human_review_requested"
+    HUMAN_APPROVED = "human_approved"
+    HUMAN_REJECTED = "human_rejected"
+    INVOICE_SETTLED = "invoice_settled"

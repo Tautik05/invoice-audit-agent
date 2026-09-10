@@ -50,3 +50,15 @@ class ERPUnitOfWork:
             )
 
         self.session.rollback()
+
+    def replace_with_new_transaction(self) -> None:
+        """Discard the current session and start a fresh transaction."""
+
+        if self.session is not None:
+            self.session.rollback()
+            self.session.close()
+
+        self.session = self.session_factory()
+        self.repository = ERPRepository(self.session)
+
+        

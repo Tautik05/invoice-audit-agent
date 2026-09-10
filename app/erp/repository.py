@@ -1,8 +1,9 @@
 from decimal import Decimal
-
+import json
+import uuid
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.orm import Session
-
 from app.db.models.invoice import Invoice as InvoiceModel
 from app.db.models.invoice_line_item import (
     InvoiceLineItem as InvoiceLineItemModel,
@@ -20,6 +21,9 @@ from app.schemas.purchase_order import (
     PurchaseOrderLineItem,
 )
 from app.schemas.vendor import Vendor
+from app.db.models.audit_event import AuditEvent as AuditEventModel
+from app.schemas.enums import AuditEventType
+
 
 
 class ERPRepository:
@@ -171,11 +175,249 @@ class ERPRepository:
             and invoice.status == "settled"
         )
 
+    def add_audit_event(
+        self,
+        workflow_id: str,
+        event_type: str,
+        actor: str,
+        details: dict | None = None,
+        idempotency_key: str | None = None,
+    ) -> AuditEventModel | None:
+        """Persist an audit event idempotently."""
+
+        if idempotency_key is None:
+            idempotency_key = str(uuid.uuid4())
+
+        values = {
+            "workflow_id": workflow_id,
+            "event_type": event_type,
+            "actor": actor,
+            "idempotency_key": idempotency_key,
+            "details": json.dumps(details) if details is not None else None,
+        }
+
+        if self.session.bind is None:
+            raise RuntimeError("Session is not bound to a database engine.")
+
+        dialect_name = self.session.bind.dialect.name
+
+        if dialect_name == "postgresql":
+            statement = (
+                postgres_insert(AuditEventModel)
+                .values(**values)
+                .on_conflict_do_nothing(
+                    index_elements=[AuditEventModel.idempotency_key],
+                )
+                .returning(AuditEventModel.id)
+            )
+
+            inserted_id = self.session.scalar(statement)
+
+            if inserted_id is None:
+                existing_event = self.session.scalar(
+                    select(AuditEventModel).where(
+                        AuditEventModel.idempotency_key == idempotency_key
+                    )
+                )
+
+                return existing_event
+
+            audit_event = self.session.get(AuditEventModel, inserted_id)
+
+            if audit_event is None:
+                raise RuntimeError(
+                    "Audit event was inserted but could not be retrieved."
+                )
+
+            return audit_event
+
+        existing_event = self.session.scalar(
+            select(AuditEventModel).where(
+                AuditEventModel.idempotency_key == idempotency_key
+            )
+        )
+
+        if existing_event is not None:
+            return existing_event
+
+        audit_event = AuditEventModel(**values)
+        self.session.add(audit_event)
+        self.session.flush()
+
+        return audit_event
+
+    def get_audit_events(
+        self,
+        workflow_id: str,
+    ) -> list[AuditEventModel]:
+        """Retrieve audit events for a workflow in chronological order."""
+
+        statement = (
+            select(AuditEventModel)
+            .where(
+                AuditEventModel.workflow_id == workflow_id
+            )
+            .order_by(
+                AuditEventModel.created_at,
+                AuditEventModel.id,
+            )
+        )
+
+        return list(
+            self.session.scalars(statement).all()
+        )
+
+
+    def _invoice_matches_existing(
+        self,
+        invoice: Invoice,
+        existing_invoice: InvoiceModel,
+    ) -> bool:
+        """Check whether an incoming invoice matches the persisted invoice."""
+
+        vendor = self.session.scalar(
+            select(VendorModel).where(
+                VendorModel.id == existing_invoice.vendor_id
+            )
+        )
+
+        if vendor is None:
+            return False
+
+        if vendor.name.strip().lower() != invoice.vendor.strip().lower():
+            return False
+
+        if existing_invoice.po_number != invoice.po_number:
+            return False
+
+        if existing_invoice.invoice_date != invoice.invoice_date:
+            return False
+
+        if existing_invoice.currency != invoice.currency:
+            return False
+
+        if existing_invoice.subtotal != invoice.subtotal:
+            return False
+
+        if existing_invoice.tax_rate != invoice.tax_rate:
+            return False
+
+        if existing_invoice.tax != invoice.tax:
+            return False
+
+        if existing_invoice.total != invoice.total:
+            return False
+
+        return True
+
+
+    def _create_invoice_record(
+        self,
+        invoice: Invoice,
+        vendor: VendorModel,
+    ) -> tuple[InvoiceModel | None, bool]:
+        """Create an invoice atomically when it does not already exist."""
+
+        values = {
+            "invoice_number": invoice.invoice_number,
+            "vendor_id": vendor.id,
+            "po_number": invoice.po_number,
+            "invoice_date": invoice.invoice_date,
+            "currency": invoice.currency,
+            "subtotal": invoice.subtotal,
+            "tax_rate": invoice.tax_rate,
+            "tax": invoice.tax,
+            "total": invoice.total,
+            "status": "settled",
+        }
+
+        if self.session.bind is None:
+            raise RuntimeError(
+                "Session is not bound to a database engine."
+            )
+
+        if self.session.bind.dialect.name == "postgresql":
+            statement = (
+                postgres_insert(InvoiceModel)
+                .values(**values)
+                .on_conflict_do_nothing(
+                    index_elements=[InvoiceModel.invoice_number],
+                )
+                .returning(InvoiceModel.id)
+            )
+
+            inserted_id = self.session.scalar(statement)
+
+            if inserted_id is None:
+                return None, False
+
+            invoice_model = self.session.get(
+                InvoiceModel,
+                inserted_id,
+            )
+
+        else:
+            invoice_model = InvoiceModel(**values)
+            self.session.add(invoice_model)
+
+            try:
+                self.session.flush()
+            except Exception:
+                raise
+
+        if invoice_model is None:
+            raise RuntimeError(
+                "Invoice was inserted but could not be retrieved."
+            )
+
+        if not invoice_model.id:
+            self.session.flush()
+
+        for item in invoice.line_items:
+            item_model = InvoiceLineItemModel(
+                invoice_id=invoice_model.id,
+                description=item.description,
+                quantity=item.quantity,
+                unit_price=item.unit_price,
+            )
+            self.session.add(item_model)
+
+        self.session.flush()
+
+        return invoice_model, True
+
+
+    def _record_invoice_settlement(
+        self,
+        invoice: Invoice,
+        workflow_id: str,
+        action: str,
+    ) -> None:
+        """Record a successful invoice settlement."""
+
+        self.add_audit_event(
+            workflow_id=workflow_id,
+            event_type=AuditEventType.INVOICE_SETTLED.value,
+            actor="agent",
+            idempotency_key=(
+                f"invoice_settled:"
+                f"{invoice.invoice_number}"
+            ),
+            details={
+                "invoice_number": invoice.invoice_number,
+                "action": action,
+                "total": str(invoice.total),
+                "currency": invoice.currency,
+            },
+        )
+        
     def settle_invoice(
         self,
         invoice: Invoice,
-    ) -> None:
-        """Persist an invoice and mark it as settled."""
+        workflow_id: str,
+    ) -> str:
+        """Persist and settle an invoice within the current transaction."""
+
         vendor = self.session.scalar(
             select(VendorModel).where(
                 VendorModel.name == invoice.vendor
@@ -195,41 +437,99 @@ class ERPRepository:
         )
 
         if existing_invoice is not None:
+            if not self._invoice_matches_existing(
+                invoice,
+                existing_invoice,
+            ):
+                raise ValueError(
+                    "Invoice number already exists with different data."
+                )
+
             if existing_invoice.status == "settled":
-                return
+                return "already_settled"
 
             existing_invoice.status = "settled"
+
+            if not existing_invoice.line_items:
+                for item in invoice.line_items:
+                    item_model = InvoiceLineItemModel(
+                        invoice_id=existing_invoice.id,
+                        description=item.description,
+                        quantity=item.quantity,
+                        unit_price=item.unit_price,
+                    )
+                    self.session.add(item_model)
+
             self.session.flush()
-            return
 
-        invoice_model = InvoiceModel(
-            invoice_number=invoice.invoice_number,
-            vendor_id=vendor.id,
-            po_number=invoice.po_number,
-            invoice_date=invoice.invoice_date,
-            currency=invoice.currency,
-            subtotal=invoice.subtotal,
-            tax_rate=invoice.tax_rate,
-            tax=invoice.tax,
-            total=invoice.total,
-            status="settled",
-        )
-
-        self.session.add(invoice_model)
-        self.session.flush()
-
-        for item in invoice.line_items:
-            item_model = InvoiceLineItemModel(
-                invoice_id=invoice_model.id,
-                description=item.description,
-                quantity=item.quantity,
-                unit_price=item.unit_price,
+            self._record_invoice_settlement(
+                invoice=invoice,
+                workflow_id=workflow_id,
+                action="settled_existing_invoice",
             )
 
-            self.session.add(item_model)
+            return "settled"
 
-        self.session.flush()
+        _, inserted = self._create_invoice_record(
+            invoice=invoice,
+            vendor=vendor,
+        )
 
+        if not inserted:
+            existing_invoice = self.session.scalar(
+                select(InvoiceModel).where(
+                    InvoiceModel.invoice_number
+                    == invoice.invoice_number
+                )
+            )
+
+            if existing_invoice is None:
+                raise RuntimeError(
+                    "Invoice conflict occurred but existing invoice "
+                    "could not be retrieved."
+                )
+
+            if not self._invoice_matches_existing(
+                invoice,
+                existing_invoice,
+            ):
+                raise ValueError(
+                    "Invoice number already exists with different data."
+                )
+
+            if existing_invoice.status == "settled":
+                return "already_settled"
+
+            existing_invoice.status = "settled"
+
+            if not existing_invoice.line_items:
+                for item in invoice.line_items:
+                    item_model = InvoiceLineItemModel(
+                        invoice_id=existing_invoice.id,
+                        description=item.description,
+                        quantity=item.quantity,
+                        unit_price=item.unit_price,
+                    )
+                    self.session.add(item_model)
+
+            self.session.flush()
+
+            self._record_invoice_settlement(
+                invoice=invoice,
+                workflow_id=workflow_id,
+                action="settled_existing_invoice",
+            )
+
+            return "settled"
+
+        self._record_invoice_settlement(
+            invoice=invoice,
+            workflow_id=workflow_id,
+            action="created_and_settled",
+        )
+
+        return "settled"
+    
     @staticmethod
     def _to_domain_purchase_order(
         purchase_order_model: PurchaseOrderModel,
