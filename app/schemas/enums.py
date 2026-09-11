@@ -45,6 +45,7 @@ class DecisionAction(str, Enum):
 class AuditEventType(str, Enum):
     EXTRACTION_COMPLETED = "extraction_completed"
     VALIDATION_COMPLETED = "validation_completed"
+    DUPLICATE_CHECK_COMPLETED = "duplicate_check_completed"
     RECONCILIATION_COMPLETED = "reconciliation_completed"
     DECISION_MADE = "decision_made"
     HUMAN_REVIEW_REQUESTED = "human_review_requested"

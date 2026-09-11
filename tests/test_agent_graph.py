@@ -24,6 +24,7 @@ from app.schemas.enums import ReconciliationStatus
 from app.schemas.extraction import ExtractedInvoice
 from app.schemas.purchase_order import PurchaseOrder
 
+
 def test_extraction_node_normalizes_invoice(
     monkeypatch,
 ):
@@ -134,6 +135,7 @@ def test_extraction_graph_runs_end_to_end(
         "ABC Supplies"
     )
     assert result["extraction_attempts"] == 1
+
 
 def test_validation_node_passes_valid_invoice():
     from app.schemas.invoice import Invoice
@@ -259,6 +261,7 @@ def test_extraction_graph_routes_invalid_invoice_to_failed_path(
     assert result["validation_result"].tax_valid is False
     assert result["validation_result"].total_valid is False
 
+
 def test_reflection_node_generates_feedback_for_failed_validation():
     from app.schemas.enums import ValidationStatus
     from app.schemas.validation import ValidationResult
@@ -376,6 +379,7 @@ def test_extraction_graph_retries_after_validation_failure(
     assert fake_pipeline.feedback_history[1] is not None
     assert "Tax mismatch" in fake_pipeline.feedback_history[1]
 
+
 def test_extraction_graph_stops_after_max_attempts(
     monkeypatch,
 ):
@@ -430,6 +434,7 @@ def test_extraction_graph_stops_after_max_attempts(
     assert result["extraction_attempts"] == 2
     assert result["validation_result"].status.value == "failed"
     assert fake_pipeline.calls == 2
+
 
 def test_reconciliation_node_queries_erp_by_po():
     from app.agent.graph import create_reconciliation_node
@@ -784,6 +789,7 @@ def test_decision_node_routes_variance_to_human_review():
         == "human_review"
     )
 
+
 def test_audit_graph_auto_approves_matched_invoice(
     erp_service,
     session_factory,
@@ -845,6 +851,9 @@ def test_audit_graph_auto_approves_matched_invoice(
                 "Vendor search should not be used."
             )
 
+        def check_duplicate_invoice(self, args):
+            return False
+
     monkeypatch.setattr(
         "app.agent.graph.InvoiceExtractionPipeline",
         FakePipeline,
@@ -854,6 +863,7 @@ def test_audit_graph_auto_approves_matched_invoice(
         FakeERPTools(),
         session_factory=session_factory,
     )
+
     result = graph.invoke(
         {
             "workflow_id": "wf-audit-001",
@@ -871,6 +881,7 @@ def test_audit_graph_auto_approves_matched_invoice(
         result["decision_result"].action.value
         == "auto_approve"
     )
+
     with session_factory() as session:
         invoice_model = session.scalar(
             select(InvoiceModel).where(
@@ -881,6 +892,7 @@ def test_audit_graph_auto_approves_matched_invoice(
 
     assert invoice_model is not None
     assert invoice_model.status == "settled"
+
 
 def test_audit_graph_routes_variance_to_human_review(
     monkeypatch,
@@ -938,6 +950,9 @@ def test_audit_graph_routes_variance_to_human_review(
                 "Vendor search should not be used."
             )
 
+        def check_duplicate_invoice(self, args):
+            return False
+
     monkeypatch.setattr(
         "app.agent.graph.InvoiceExtractionPipeline",
         FakePipeline,
@@ -964,6 +979,7 @@ def test_audit_graph_routes_variance_to_human_review(
         result["decision_result"].action.value
         == "human_review"
     )
+
 
 def test_audit_graph_interrupts_for_human_review(
     erp_service,
@@ -1291,3 +1307,4 @@ def test_settlement_node_rejects_unauthorized_invoice(
         match="not authorized for settlement",
     ):
         settlement_node(state)
+

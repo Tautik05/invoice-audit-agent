@@ -97,3 +97,23 @@ def test_failed_reconciliation_defaults_to_human_review():
         decision.action
         == DecisionAction.HUMAN_REVIEW
     )
+
+def test_duplicate_invoice_is_rejected() -> None:
+    result = make_result(
+        ReconciliationStatus.MATCHED
+    )
+
+    decision = decide_invoice_action(
+        result,
+        duplicate_invoice=True,
+    )
+
+    assert (
+        decision.action
+        == DecisionAction.REJECT
+    )
+
+    assert (
+        "Invoice has already been settled in the ERP."
+        in decision.reasons
+    )

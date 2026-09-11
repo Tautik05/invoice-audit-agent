@@ -1,0 +1,232 @@
+{
+  "vendors": [
+    {
+      "vendor_code": "V-1001",
+      "name": "Acme Office Supplies",
+      "currency": "USD"
+    },
+    {
+      "vendor_code": "V-1002",
+      "name": "Hoffman Ltd",
+      "currency": "INR"
+    },
+    {
+      "vendor_code": "V-1003",
+      "name": "Global Office Systems",
+      "currency": "USD"
+    },
+    {
+      "vendor_code": "V-1004",
+      "name": "Northstar Technologies",
+      "currency": "USD"
+    },
+    {
+      "vendor_code": "V-1005",
+      "name": "European Office Goods",
+      "currency": "EUR"
+    },
+    {
+      "vendor_code": "V-1006",
+      "name": "Metro Computing",
+      "currency": "GBP"
+    },
+    {
+      "vendor_code": "V-1007",
+      "name": "Reliable Business Equipment",
+      "currency": "USD"
+    },
+    {
+      "vendor_code": "V-1008",
+      "name": "Precision Office Ltd",
+      "currency": "USD"
+    },
+    {
+      "vendor_code": "V-1009",
+      "name": "Enterprise Hardware Corp",
+      "currency": "USD"
+    },
+    {
+      "vendor_code": "V-1010",
+      "name": "ABC Technologies",
+      "currency": "USD"
+    },
+    {
+      "vendor_code": "V-9999",
+      "name": "Different Vendor Ltd",
+      "currency": "USD"
+    },
+    {
+      "vendor_code": "V-1011",
+      "name": "ABC Technologies",
+      "currency": "USD"
+    },
+    {
+      "vendor_code": "V-1012",
+      "name": "ABC Technologies",
+      "currency": "USD"
+    }
+  ],
+  "purchase_orders": [
+    {
+      "po_number": "PO-10001",
+      "vendor_code": "V-1001",
+      "currency": "USD",
+      "tax_rate": "0.18",
+      "status": "approved",
+      "line_items": [
+        {
+          "description": "Laptop",
+          "quantity": 10,
+          "unit_price": "1000.00"
+        },
+        {
+          "description": "Monitor",
+          "quantity": 5,
+          "unit_price": "300.00"
+        }
+      ]
+    },
+    {
+      "po_number": "PO-10003",
+      "vendor_code": "V-1003",
+      "currency": "USD",
+      "tax_rate": "0.18",
+      "status": "approved",
+      "line_items": [
+        {
+          "description": "Keyboard",
+          "quantity": 20,
+          "unit_price": "100.00"
+        },
+        {
+          "description": "Mouse",
+          "quantity": 20,
+          "unit_price": "50.00"
+        }
+      ]
+    },
+    {
+      "po_number": "PO-10004",
+      "vendor_code": "V-9999",
+      "currency": "USD",
+      "tax_rate": "0.18",
+      "status": "approved",
+      "line_items": [
+        {
+          "description": "Laptop Dock",
+          "quantity": 10,
+          "unit_price": "250.00"
+        }
+      ]
+    },
+    {
+      "po_number": "PO-10005",
+      "vendor_code": "V-1005",
+      "currency": "EUR",
+      "tax_rate": "0.20",
+      "status": "approved",
+      "line_items": [
+        {
+          "description": "Office Chair",
+          "quantity": 10,
+          "unit_price": "400.00"
+        }
+      ]
+    },
+    {
+      "po_number": "PO-10006",
+      "vendor_code": "V-1006",
+      "currency": "GBP",
+      "tax_rate": "0.20",
+      "status": "approved",
+      "line_items": [
+        {
+          "description": "Headset",
+          "quantity": 15,
+          "unit_price": "80.00"
+        }
+      ]
+    },
+    {
+      "po_number": "PO-10007",
+      "vendor_code": "V-1007",
+      "currency": "USD",
+      "tax_rate": "0.18",
+      "status": "approved",
+      "line_items": [
+        {
+          "description": "Desktop Computer",
+          "quantity": 5,
+          "unit_price": "1200.00"
+        }
+      ]
+    },
+    {
+      "po_number": "PO-10008",
+      "vendor_code": "V-1008",
+      "currency": "USD",
+      "tax_rate": "0.18",
+      "status": "approved",
+      "line_items": [
+        {
+          "description": "Printer",
+          "quantity": 5,
+          "unit_price": "1000.00"
+        }
+      ]
+    },
+    {
+      "po_number": "PO-10009",
+      "vendor_code": "V-1009",
+      "currency": "USD",
+      "tax_rate": "0.18",
+      "status": "approved",
+      "line_items": [
+        {
+          "description": "Server",
+          "quantity": 2,
+          "unit_price": "3000.00"
+        }
+      ]
+    },
+    {
+      "po_number": "PO-10010-A",
+      "vendor_code": "V-1011",
+      "vendor_name": "ABC Technologies",
+      "currency": "USD",
+      "tax_rate": "0.18",
+      "status": "approved",
+      "line_items": [
+        {
+          "description": "Network Switch",
+          "quantity": 5,
+          "unit_price": "600.00"
+        }
+      ]
+    },
+    {
+      "po_number": "PO-10010-B",
+      "vendor_code": "V-1012",
+      "vendor_name": "ABC Technologies",
+      "currency": "USD",
+      "tax_rate": "0.18",
+      "status": "approved",
+      "line_items": [
+        {
+          "description": "Network Switch",
+          "quantity": 5,
+          "unit_price": "600.00"
+        }
+      ]
+    }
+  ],
+  "settled_invoices": [
+    {
+      "invoice_number": "AUDIT-007",
+      "vendor_code": "V-1007",
+      "po_number": "PO-10007",
+      "currency": "USD",
+      "status": "settled"
+    }
+  ]
+}

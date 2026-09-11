@@ -8,8 +8,17 @@ from app.schemas.reconciliation import ReconciliationResult
 
 def decide_invoice_action(
     reconciliation_result: ReconciliationResult,
+    duplicate_invoice: bool = False,
 ) -> DecisionResult:
-    """Determine the next action from reconciliation results."""
+    """Determine the next action from invoice audit results."""
+
+    if duplicate_invoice:
+        return DecisionResult(
+            action=DecisionAction.REJECT,
+            reasons=[
+                "Invoice has already been settled in the ERP."
+            ],
+        )
 
     if reconciliation_result.status == (
         ReconciliationStatus.MATCHED

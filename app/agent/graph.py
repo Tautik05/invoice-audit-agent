@@ -23,6 +23,7 @@ from app.schemas.enums import (
     WorkflowStatus,
 )
 from app.schemas.tools import (
+    CheckDuplicateInvoiceArgs,
     QueryPurchaseOrderArgs,
     SearchPurchaseOrdersArgs,
 )
@@ -30,6 +31,11 @@ from app.validation.engine import validate_invoice
 
 
 MAX_EXTRACTION_ATTEMPTS = 2
+
+
+def _enum_value(value):
+    """Return an enum value as a plain string."""
+    return value.value if hasattr(value, "value") else value
 
 def record_workflow_audit_event(
     session_factory,
@@ -156,6 +162,46 @@ def validation_node(
         "validation_result": validation_result
     }
 
+def create_duplicate_check_node(
+    erp_tools: ERPTools,
+    session_factory=SessionLocal,
+):
+    """Create a duplicate-invoice check node bound to ERP tools."""
+
+    def duplicate_check_node(
+        state: InvoiceAuditState,
+    ) -> dict:
+        """Check whether the invoice has already been settled."""
+
+        invoice = state["invoice"]
+
+        duplicate_invoice = (
+            erp_tools.check_duplicate_invoice(
+                CheckDuplicateInvoiceArgs(
+                    invoice_number=invoice.invoice_number
+                )
+            )
+        )
+
+        record_workflow_audit_event(
+            session_factory=session_factory,
+            workflow_id=state["workflow_id"],
+            event_type=AuditEventType.DUPLICATE_CHECK_COMPLETED,
+            idempotency_key=(
+                f"duplicate_check_completed:"
+                f"{state['workflow_id']}"
+            ),
+            details={
+                "invoice_number": invoice.invoice_number,
+                "duplicate": duplicate_invoice,
+            },
+        )
+
+        return {
+            "duplicate_invoice": duplicate_invoice,
+        }
+
+    return duplicate_check_node
 
 def reflection_node(state: InvoiceAuditState) -> dict:
     """Generate feedback for a failed extraction attempt."""
@@ -204,6 +250,20 @@ def route_after_reflection(state: InvoiceAuditState) -> str:
         return "retry"
 
     return "stop"
+
+
+def validation_failure_node(
+    state: InvoiceAuditState,
+) -> dict:
+    """Mark the workflow as failed after exhausting extraction attempts."""
+
+    return {
+        "workflow_status": WorkflowStatus.FAILED,
+        "error": (
+            "Invoice failed deterministic validation "
+            "after the maximum extraction attempts."
+        ),
+    }
 
 
 def create_reconciliation_node(
@@ -294,7 +354,11 @@ def decision_node(
     ]
 
     decision_result = decide_invoice_action(
-        reconciliation_result
+        reconciliation_result,
+        duplicate_invoice=state.get(
+            "duplicate_invoice",
+            False,
+        ),
     )
 
     workflow_id = state.get("workflow_id")
@@ -319,6 +383,12 @@ def decision_node(
         "human_approval_required": (
             decision_result.action
             == DecisionAction.HUMAN_REVIEW
+        ),
+        "workflow_status": (
+            WorkflowStatus.WAITING_FOR_HUMAN
+            if decision_result.action
+            == DecisionAction.HUMAN_REVIEW
+            else WorkflowStatus.RUNNING
         ),
     }
 
@@ -397,7 +467,7 @@ def human_review_node(
     return {
         "human_decision": human_decision,
         "workflow_status": (
-            WorkflowStatus.COMPLETED
+            WorkflowStatus.RUNNING
             if human_decision
             == HumanDecision.APPROVED
             else WorkflowStatus.REJECTED
@@ -419,33 +489,52 @@ def create_settlement_node(
         workflow_id = state["workflow_id"]
         decision_result = state["decision_result"]
 
-        if decision_result.action == DecisionAction.HUMAN_REVIEW:
-            if state.get("human_decision") != HumanDecision.APPROVED:
+        decision_action = _enum_value(
+            decision_result.action
+        )
+
+        if decision_action == DecisionAction.HUMAN_REVIEW.value:
+            human_decision = _enum_value(
+                state.get("human_decision")
+            )
+
+            if human_decision != HumanDecision.APPROVED.value:
                 raise ValueError(
                     "Invoice is not authorized for settlement."
                 )
 
-        elif decision_result.action != DecisionAction.AUTO_APPROVE:
+        elif decision_action != DecisionAction.AUTO_APPROVE.value:
             raise ValueError(
                 "Invoice is not authorized for settlement."
             )
 
         validation_result = state["validation_result"]
 
-        if validation_result.status != ValidationStatus.PASSED:
+        validation_status = _enum_value(
+            validation_result.status
+        )
+
+        if validation_status != ValidationStatus.PASSED.value:
             raise ValueError(
                 "Invoice failed deterministic validation."
             )
 
-        reconciliation_result = state["reconciliation_result"]
+        reconciliation_result = state[
+            "reconciliation_result"
+        ]
+
+        reconciliation_status = _enum_value(
+            reconciliation_result.status
+        )
 
         if (
-            decision_result.action == DecisionAction.AUTO_APPROVE
-            and reconciliation_result.status
-            != ReconciliationStatus.MATCHED
+            decision_action == DecisionAction.AUTO_APPROVE.value
+            and reconciliation_status
+            != ReconciliationStatus.MATCHED.value
         ):
             raise ValueError(
-                "Invoice is not safely reconciled for auto-settlement."
+                "Invoice is not safely reconciled "
+                "for auto-settlement."
             )
 
         with ERPUnitOfWork(session_factory) as uow:
@@ -461,14 +550,18 @@ def create_settlement_node(
 
     return settlement_node
 
-
-def route_after_decision(state: InvoiceAuditState) -> str:
+def route_after_decision(
+    state: InvoiceAuditState,
+) -> str:
     """Route the workflow based on the decision result."""
 
     decision_result = state["decision_result"]
 
     if decision_result.action == DecisionAction.AUTO_APPROVE:
         return "auto_approve"
+
+    if decision_result.action == DecisionAction.REJECT:
+        return "reject"
 
     return "human_review"
 
@@ -478,7 +571,10 @@ def route_after_human_review(
 ) -> str:
     """Route the workflow after human review."""
 
-    if state.get("human_decision") == HumanDecision.APPROVED:
+    if (
+        _enum_value(state.get("human_decision"))
+        == HumanDecision.APPROVED.value
+    ):
         return "approved"
 
     return "rejected"
@@ -499,6 +595,11 @@ def build_audit_graph(
 
     injected_extraction_node = create_extraction_node(
         extraction_pipeline,
+        session_factory=session_factory,
+    )
+
+    duplicate_check_node = create_duplicate_check_node(
+        erp_tools,
         session_factory=session_factory,
     )
 
@@ -553,6 +654,16 @@ def build_audit_graph(
     )
 
     graph.add_node(
+        "validation_failure",
+        validation_failure_node,
+    )
+
+    graph.add_node(
+        "duplicate_check",
+        duplicate_check_node,
+    )
+
+    graph.add_node(
         "reconcile",
         reconciliation_node,
     )
@@ -572,6 +683,118 @@ def build_audit_graph(
         settlement_node,
     )
 
+    # --------------------------------------------------
+    # Main workflow
+    # --------------------------------------------------
+
+    graph.add_edge(
+        START,
+        "extract",
+    )
+
+    graph.add_edge(
+        "extract",
+        "validate",
+    )
+
+    # Validation failure -> reflection/retry
+    # Validation success -> duplicate check
+    graph.add_conditional_edges(
+        "validate",
+        route_after_validation,
+        {
+            "passed": "duplicate_check",
+            "failed": "reflect",
+        },
+    )
+
+    # Reflection -> retry extraction or terminate
+    graph.add_conditional_edges(
+        "reflect",
+        route_after_reflection,
+        {
+            "retry": "extract",
+            "stop": "validation_failure",
+        },
+    )
+
+    # Validation failure -> workflow failure
+    graph.add_edge(
+        "validation_failure",
+        END,
+    )
+
+
+    # Duplicate check -> reconciliation
+    graph.add_edge(
+        "duplicate_check",
+        "reconcile",
+    )
+
+    # Reconciliation -> decision
+    graph.add_edge(
+        "reconcile",
+        "decide",
+    )
+
+    # Decision -> settlement, human review, or rejection
+    graph.add_conditional_edges(
+        "decide",
+        route_after_decision,
+        {
+            "auto_approve": "settle",
+            "human_review": "human_review",
+            "reject": END,
+        },
+    )
+
+    # Human decision -> settlement or rejection
+    graph.add_conditional_edges(
+        "human_review",
+        route_after_human_review,
+        {
+            "approved": "settle",
+            "rejected": END,
+        },
+    )
+
+    # Settlement -> workflow completion
+    graph.add_edge(
+        "settle",
+        END,
+    )
+
+    return graph.compile(
+        checkpointer=checkpointer
+    )
+
+
+def build_graph():
+    """Build the invoice extraction and validation workflow."""
+
+    extraction_pipeline = InvoiceExtractionPipeline()
+
+    extraction_node = create_extraction_node(
+        extraction_pipeline
+    )
+
+    graph = StateGraph(InvoiceAuditState)
+
+    graph.add_node(
+        "extract",
+        extraction_node,
+    )
+
+    graph.add_node(
+        "validate",
+        validation_node,
+    )
+
+    graph.add_node(
+        "reflect",
+        reflection_node,
+    )
+
     graph.add_edge(
         START,
         "extract",
@@ -586,7 +809,7 @@ def build_audit_graph(
         "validate",
         route_after_validation,
         {
-            "passed": "reconcile",
+            "passed": END,
             "failed": "reflect",
         },
     )
@@ -600,37 +823,8 @@ def build_audit_graph(
         },
     )
 
-    graph.add_edge(
-        "reconcile",
-        "decide",
-    )
+    return graph.compile()
 
-    graph.add_conditional_edges(
-        "decide",
-        route_after_decision,
-        {
-            "auto_approve": "settle",
-            "human_review": "human_review",
-        },
-    )
-
-    graph.add_conditional_edges(
-        "human_review",
-        route_after_human_review,
-        {
-            "approved": "settle",
-            "rejected": END,
-        },
-    )
-
-    graph.add_edge(
-        "settle",
-        END,
-    )
-
-    return graph.compile(
-        checkpointer=checkpointer
-    )
 
 def build_graph():
     """Build the invoice extraction and validation workflow."""
